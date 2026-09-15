@@ -284,6 +284,76 @@ fn clean_title(raw: &str) -> String {
         .join(" ")
 }
 
+fn is_release_token(token: &str) -> bool {
+    let token = token
+        .trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '-')
+        .to_ascii_lowercase();
+    let compact = token.replace('-', "");
+    let resolution = compact
+        .strip_suffix(['p', 'i'])
+        .is_some_and(|number| matches!(number.parse::<u32>(), Ok(480..=4320)));
+    resolution
+        || matches!(
+            compact.as_str(),
+            "4k" | "8k"
+                | "uhd"
+                | "hdr"
+                | "hdr10"
+                | "hdr10plus"
+                | "dv"
+                | "dolbyvision"
+                | "x264"
+                | "x265"
+                | "h264"
+                | "h265"
+                | "hevc"
+                | "av1"
+                | "xvid"
+                | "divx"
+                | "8bit"
+                | "10bit"
+                | "12bit"
+                | "bluray"
+                | "brrip"
+                | "bdrip"
+                | "webrip"
+                | "webdl"
+                | "hdtv"
+                | "dvdrip"
+                | "remux"
+                | "proper"
+                | "repack"
+                | "extended"
+        )
+        || [
+            "aac", "ac3", "eac3", "ddp", "dts", "truehd", "atmos", "flac", "mp3",
+        ]
+        .iter()
+        .any(|codec| compact.starts_with(codec))
+}
+
+fn strip_release_suffix(raw: &str) -> String {
+    let mut title = Vec::new();
+    for token in raw.split_whitespace() {
+        if !title.is_empty() && (token.starts_with('[') || is_release_token(token)) {
+            break;
+        }
+        title.push(token);
+    }
+    title
+        .join(" ")
+        .trim_matches(|character: char| character.is_whitespace() || "-–—[({".contains(character))
+        .to_owned()
+}
+
+/// Convert a media release name into the title and optional year sent to TMDb.
+fn media_title(raw: &str) -> (String, Option<i64>) {
+    let cleaned = clean_title(raw);
+    let (title, year) = split_title_year(&cleaned);
+    let stripped = strip_release_suffix(&title);
+    (if stripped.is_empty() { title } else { stripped }, year)
+}
+
 /// Parsed TV episode file name: show title plus season/episode numbers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EpisodeRef {
@@ -531,7 +601,7 @@ pub async fn enrich_series(state: &AppState, item: &str) -> Result<bool> {
     let provider = if let Some(provider) = provider_id(state, item).await? {
         provider
     } else {
-        let (title, year) = split_title_year(&name);
+        let (title, year) = media_title(&name);
         let hits = search_tv(state, &title).await?;
         let Some(hit) = best_match(&hits, &title, year) else {
             return Ok(false);
@@ -601,7 +671,7 @@ async fn match_and_apply(
     raw_name: &str,
     year_override: Option<i64>,
 ) -> Result<bool> {
-    let (title, filename_year) = split_title_year(&clean_title(raw_name));
+    let (title, filename_year) = media_title(raw_name);
     let year = year_override.or(filename_year);
     let mut hits = search(state, &title, year).await?;
     if hits.is_empty() && year.is_some() {
@@ -836,6 +906,26 @@ mod tests {
         );
         assert_eq!(clean_title("my_movie-name"), "my movie-name");
         assert_eq!(clean_title("   spaced   out  "), "spaced out");
+    }
+
+    #[test]
+    fn parses_release_style_movie_names() {
+        assert_eq!(
+            media_title("Fight Club (1999) [2160p x265 10bit]"),
+            ("Fight Club".to_owned(), Some(1999))
+        );
+        assert_eq!(
+            media_title("Hugo 2011 2160p 4K BluRay x265 10bit AAC5 1-[YTS MX]"),
+            ("Hugo".to_owned(), Some(2011))
+        );
+        assert_eq!(
+            media_title("Arrival.2160p.UHD.BluRay.x265.10bit.DTS"),
+            ("Arrival".to_owned(), None)
+        );
+        assert_eq!(
+            media_title("Dune 2160p 2021 BluRay"),
+            ("Dune".to_owned(), Some(2021))
+        );
     }
 
     #[test]
