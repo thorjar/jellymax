@@ -1,0 +1,9 @@
+target
+data
+media
+.env
+.git
+frontend
+*.db
+*.db-shm
+*.db-wal

@@ -1,0 +1,42 @@
+# Copy this file to the server as compose.yaml.
+services:
+  backend:
+    image: ghcr.io/thorjar/jellymax-backend:latest
+    restart: unless-stopped
+    environment:
+      JELLYMAX_NAME: ${JELLYMAX_NAME:-Jellymax}
+      JELLYMAX_TMDB_API_KEY: ${JELLYMAX_TMDB_API_KEY:-}
+      JELLYMAX_TMDB_LANGUAGE: ${JELLYMAX_TMDB_LANGUAGE:-en-US}
+      JELLYMAX_OPENSUBTITLES_API_KEY: ${JELLYMAX_OPENSUBTITLES_API_KEY:-}
+      JELLYMAX_TRANSCODE_CACHE_MB: ${JELLYMAX_TRANSCODE_CACHE_MB:-192}
+    volumes:
+      - server_data:/data
+      # Change the host path; a single folder may contain all your media.
+      - /srv/media:/media:ro
+      # Add more mounts if needed, with distinct container paths.
+      # - /mnt/usb1:/media-usb1:ro
+    tmpfs:
+      - /data/transcodes:size=${JELLYMAX_TRANSCODE_TMPFS_BYTES:-268435456},mode=0700,uid=10001,gid=10001
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8097/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  frontend:
+    image: ghcr.io/thorjar/jellymax-frontend:latest
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "8097:8080"
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  server_data:

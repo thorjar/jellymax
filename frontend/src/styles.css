@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+/*
+ * jellymax web client — Tailwind v4 entry point.
+ * Design tokens live in @theme; repeated patterns are small @apply-based
+ * component classes so page markup stays readable. Everything else is
+ * utility classes in the components themselves.
+ */
+
+@theme {
+  --color-surface: #101014;
+  --color-surface-raised: #17171e;
+  --color-surface-hover: #20202a;
+  --color-edge: #2a2a36;
+  --color-ink: #e8e8ee;
+  --color-ink-muted: #9a9aa6;
+  --color-brand: #00a4dc;
+  --color-brand-strong: #2db9e8;
+  --color-danger: #e5484d;
+  --color-success: #46a758;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --radius-card: 12px;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-surface text-ink font-sans antialiased;
+  }
+  ::selection {
+    @apply bg-brand/40;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-[12px] border border-edge bg-surface-raised;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg border border-edge
+      bg-surface-hover px-3.5 py-2 text-sm font-medium text-ink transition
+      hover:border-brand/60 hover:text-brand-strong focus-visible:outline-2
+      focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply border-brand bg-brand text-white hover:bg-brand-strong hover:border-brand-strong
+      hover:text-white;
+  }
+  .btn-danger {
+    @apply border-danger/40 text-danger hover:border-danger hover:bg-danger/10
+      hover:text-danger;
+  }
+  .btn-sm {
+    @apply px-2.5 py-1.5 text-xs;
+  }
+  .input {
+    @apply w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm text-ink
+      placeholder:text-ink-muted/60 focus:border-brand focus:outline-none;
+  }
+  .label {
+    @apply mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-muted;
+  }
+  .badge {
+    @apply inline-flex items-center rounded-full border border-edge bg-surface-hover
+      px-2 py-0.5 text-xs text-ink-muted;
+  }
+  .chip {
+    @apply inline-flex items-center rounded-full bg-brand/15 px-2.5 py-0.5 text-xs
+      font-medium text-brand-strong;
+  }
+  .page-title {
+    @apply text-2xl font-semibold tracking-tight;
+  }
+  .muted {
+    @apply text-ink-muted;
+  }
+  .sidebar-link {
+    @apply flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-ink-muted
+      transition hover:bg-surface-hover hover:text-ink;
+  }
+  .sidebar-link-active {
+    @apply bg-brand/15 text-brand-strong hover:bg-brand/15 hover:text-brand-strong;
+  }
+}

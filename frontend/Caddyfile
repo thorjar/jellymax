@@ -1,0 +1,13 @@
+:8080 {
+    @api path /health /System/* /Users /Users/* /Sessions/* /Library/* /ScheduledTasks /Items/* /Items /Recommendations /Videos/* /Audio/* /Playlists/* /Playlists /RemoteServers/* /RemoteServers /RemoteItems/*
+
+    handle @api {
+        reverse_proxy backend:8097
+    }
+
+    handle {
+        root * /srv
+        try_files {path} /index.html
+        file_server
+    }
+}

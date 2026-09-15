@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Jellymax</title>
+  <defs>
+    <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#12395d"/>
+      <stop offset="1" stop-color="#071523"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#72e7ff"/>
+      <stop offset="1" stop-color="#18a8df"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#surface)"/>
+  <path d="M18 16h25v18c0 12-8 19-20 19-5 0-9-1-13-4l6-9c2 2 4 2 7 2 5 0 8-3 8-9V27H18z" fill="url(#mark)"/>
+  <path d="m34 29 13 8-13 8z" fill="#e7fbff"/>
+</svg>
