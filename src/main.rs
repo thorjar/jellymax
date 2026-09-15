@@ -2,7 +2,10 @@ use axum::http::{HeaderValue, Method, header};
 use clap::{Parser, Subcommand};
 use jellymax::{AppState, auth, db::Database, instance::ServerInstance, router};
 use std::{net::SocketAddr, path::PathBuf};
-use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    services::{ServeDir, ServeFile},
+};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -27,6 +30,9 @@ enum Command {
         /// Explicit browser frontend origin, e.g. http://localhost:5173.
         #[arg(long, env = "JELLYMAX_CORS_ORIGIN")]
         cors_origin: Option<String>,
+        /// Optional compiled web frontend directory served from this same port.
+        #[arg(long, env = "JELLYMAX_WEB_DIR")]
+        web_dir: Option<PathBuf>,
         /// TMDb API v3 key; enables movie metadata enrichment during scans.
         #[arg(long, env = "JELLYMAX_TMDB_API_KEY")]
         tmdb_api_key: Option<String>,
@@ -69,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ffprobe,
             ffmpeg,
             cors_origin,
+            web_dir,
             tmdb_api_key,
             tmdb_language,
         } => {
@@ -88,6 +95,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.ffmpeg = ffmpeg;
             }
             let mut app = router(state);
+            if let Some(web_dir) = web_dir.filter(|path| path.is_dir()) {
+                let index = web_dir.join("index.html");
+                app = app.fallback_service(ServeDir::new(web_dir).fallback(ServeFile::new(index)));
+            }
             if let Some(origin) = cors_origin {
                 app = app.layer(
                     CorsLayer::new()

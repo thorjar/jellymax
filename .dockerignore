@@ -3,7 +3,9 @@ data
 media
 .env
 .git
-frontend
+frontend/node_modules
+frontend/dist
+frontend/test-results
 *.db
 *.db-shm
 *.db-wal
