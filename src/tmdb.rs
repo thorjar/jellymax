@@ -191,7 +191,16 @@ pub async fn download_poster(state: &AppState, poster_path: &str, destination: &
 /// all treated as failures.
 async fn curl_text(url: &str) -> Option<String> {
     let mut child = Command::new(CURL)
-        .args(["-sSfL", "--max-time", &CURL_TIMEOUT_SECS.to_string()])
+        .args([
+            "-sSfL",
+            "--retry",
+            "2",
+            "--retry-all-errors",
+            "--retry-delay",
+            "1",
+            "--max-time",
+            &CURL_TIMEOUT_SECS.to_string(),
+        ])
         .arg(url)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -199,21 +208,24 @@ async fn curl_text(url: &str) -> Option<String> {
         .spawn()
         .ok()?;
     let stdout = child.stdout.take()?;
-    let bytes = tokio::time::timeout(Duration::from_secs(CURL_TIMEOUT_SECS + 2), async move {
-        let mut bytes = Vec::new();
-        stdout
-            .take(MAX_OUTPUT + 1)
-            .read_to_end(&mut bytes)
-            .await
-            .ok()?;
-        if bytes.len() as u64 > MAX_OUTPUT {
-            return None;
-        }
-        if !child.wait().await.ok()?.success() {
-            return None;
-        }
-        Some(bytes)
-    })
+    let bytes = tokio::time::timeout(
+        Duration::from_secs((CURL_TIMEOUT_SECS + 2) * 3),
+        async move {
+            let mut bytes = Vec::new();
+            stdout
+                .take(MAX_OUTPUT + 1)
+                .read_to_end(&mut bytes)
+                .await
+                .ok()?;
+            if bytes.len() as u64 > MAX_OUTPUT {
+                return None;
+            }
+            if !child.wait().await.ok()?.success() {
+                return None;
+            }
+            Some(bytes)
+        },
+    )
     .await
     .ok()??;
     Some(String::from_utf8_lossy(&bytes).into_owned())
@@ -278,7 +290,15 @@ fn split_title_year(raw: &str) -> (String, Option<i64>) {
 
 /// Normalise a scanned file stem into a human search phrase.
 fn clean_title(raw: &str) -> String {
-    raw.replace(['.', '_'], " ")
+    raw.chars()
+        .map(|character| {
+            if character.is_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -673,13 +693,15 @@ async fn match_and_apply(
 ) -> Result<bool> {
     let (title, filename_year) = media_title(raw_name);
     let year = year_override.or(filename_year);
-    let mut hits = search(state, &title, year).await?;
-    if hits.is_empty() && year.is_some() {
-        // Filenames can produce bogus year hints; retry without the hint
-        // before declaring there is no match.
-        hits = search(state, &title, None).await?;
+    // A clean title is the strongest signal. Adding a year to the first query
+    // can hide valid results when a filename contains the wrong year.
+    let mut hits = search(state, &title, None).await?;
+    let mut matched = best_match(&hits, &title, year);
+    if matched.is_none() && year.is_some() {
+        hits = search(state, &title, year).await?;
+        matched = best_match(&hits, &title, year);
     }
-    let Some(hit) = best_match(&hits, &title, year) else {
+    let Some(hit) = matched else {
         tracing::info!(item = %item_id, title = %title, "No TMDb match found");
         return Ok(false);
     };
@@ -904,8 +926,13 @@ mod tests {
             clean_title("Big.Buck.Bunny.2008.1080p"),
             "Big Buck Bunny 2008 1080p"
         );
-        assert_eq!(clean_title("my_movie-name"), "my movie-name");
+        assert_eq!(clean_title("my_movie-name"), "my movie name");
         assert_eq!(clean_title("   spaced   out  "), "spaced out");
+        assert_eq!(clean_title("fight.club"), "fight club");
+        assert_eq!(
+            clean_title("Spider-Man: No Way Home"),
+            "Spider Man No Way Home"
+        );
     }
 
     #[test]

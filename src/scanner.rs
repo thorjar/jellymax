@@ -317,19 +317,87 @@ async fn scan(state: &AppState) -> Result<()> {
                 record_error(state, format!("Library root changed during scan: {root}")).await;
                 continue;
             }
+            let cleanup_library = library.clone();
             let removed = state
                 .db
                 .call(move |c| {
                     Ok(c.execute(
                         "DELETE FROM items WHERE library_id=?1 AND scan_id<>?2",
-                        params![library, scan_id],
+                        params![cleanup_library, scan_id],
                     )?)
                 })
                 .await?;
-            state.scan_status.write().await.removed += removed as u64;
+            let duplicates = reconcile_local_duplicates(state, &library).await?;
+            state.scan_status.write().await.removed += (removed + duplicates) as u64;
         }
     }
     Ok(())
+}
+
+/// Collapse alternate local files which TMDb identifies as the same movie or
+/// episode. Files without a TMDb match remain separate because a guessed title
+/// is not strong enough evidence to delete a catalog record.
+async fn reconcile_local_duplicates(state: &AppState, library: &str) -> Result<usize> {
+    let library = library.to_owned();
+    state
+        .db
+        .call(move |connection| {
+            let groups = {
+                let mut statement = connection.prepare(
+                    "SELECT kind,tmdb_id FROM items
+                     WHERE library_id=?1 AND remote_server_id IS NULL
+                       AND kind IN ('Movie','Episode') AND tmdb_id IS NOT NULL
+                     GROUP BY kind,tmdb_id HAVING COUNT(*)>1",
+                )?;
+                statement
+                    .query_map([&library], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            let transaction = connection.transaction()?;
+            let mut removed = 0;
+            for (kind, provider) in groups {
+                let candidates = {
+                    let mut statement = transaction.prepare(
+                        "SELECT id FROM items
+                         WHERE library_id=?1 AND kind=?2 AND tmdb_id=?3
+                           AND remote_server_id IS NULL
+                         ORDER BY runtime_ticks IS NOT NULL DESC,size DESC,modified DESC,id",
+                    )?;
+                    statement
+                        .query_map(params![library, kind, provider], |row| {
+                            row.get::<_, String>(0)
+                        })?
+                        .collect::<std::result::Result<Vec<_>, _>>()?
+                };
+                let Some(winner) = candidates.first() else {
+                    continue;
+                };
+                for duplicate in candidates.iter().skip(1) {
+                    transaction.execute(
+                        "INSERT INTO user_data(user_id,item_id,position_ticks,played,favorite,updated_at)
+                         SELECT user_id,?1,position_ticks,played,favorite,updated_at
+                         FROM user_data WHERE item_id=?2
+                         ON CONFLICT(user_id,item_id) DO UPDATE SET
+                           position_ticks=MAX(position_ticks,excluded.position_ticks),
+                           played=MAX(played,excluded.played),
+                           favorite=MAX(favorite,excluded.favorite),
+                           updated_at=MAX(updated_at,excluded.updated_at)",
+                        params![winner, duplicate],
+                    )?;
+                    transaction.execute(
+                        "UPDATE playlist_items SET item_id=?1 WHERE item_id=?2",
+                        params![winner, duplicate],
+                    )?;
+                    removed +=
+                        transaction.execute("DELETE FROM items WHERE id=?1", [duplicate])?;
+                }
+            }
+            transaction.commit()?;
+            Ok(removed)
+        })
+        .await
 }
 async fn probe(executable: &str, path: &str) -> Option<(Option<i64>, String)> {
     use tokio::io::AsyncReadExt;
@@ -346,7 +414,7 @@ async fn probe(executable: &str, path: &str) -> Option<(Option<i64>, String)> {
         .kill_on_drop(true)
         .spawn().ok()?;
     let stdout = child.stdout.take()?;
-    let bytes = tokio::time::timeout(Duration::from_secs(10), async move {
+    let bytes = tokio::time::timeout(Duration::from_secs(30), async move {
         let mut bytes = Vec::new();
         stdout
             .take(MAX_OUTPUT + 1)

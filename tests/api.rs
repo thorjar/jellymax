@@ -1187,8 +1187,22 @@ async fn tmdb_metadata_and_artwork_survive_rescans_restart_and_refresh() {
         ..Default::default()
     };
     s.app = router(s.state.clone());
+    // A second local file which resolves to the same TMDb movie is an
+    // alternate copy, not another library tile. Keep the larger playable
+    // candidate and clean up the duplicate after metadata enrichment.
+    std::fs::write(
+        s.dir
+            .path()
+            .join("movies/Example.Movie.2020.2160p.x265.mkv"),
+        b"x",
+    )
+    .unwrap();
     let status = s.scan().await;
     assert_eq!(status["MetadataFailures"], 0, "{status}");
+    assert_eq!(status["Removed"], 1, "{status}");
+    let movies = s.call("GET", "/Items?IncludeItemTypes=Movie", None).await.1;
+    assert_eq!(movies["TotalRecordCount"], 1);
+    assert_eq!(movies["Items"][0]["Id"], movie);
     let movie_data = s.call("GET", &format!("/Items/{movie}"), None).await.1;
     assert_eq!(movie_data["TmdbId"], "42");
     assert_eq!(movie_data["Genres"], json!(["Drama"]));
