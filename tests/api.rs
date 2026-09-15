@@ -99,6 +99,33 @@ async fn first_run_setup_is_single_use_and_enables_login() {
 }
 
 #[tokio::test]
+async fn object_store_listing_never_exposes_credentials() {
+    let s = TestServer::new().await;
+    s.state
+        .db
+        .call(|connection| {
+            connection.execute(
+                "INSERT INTO object_stores(id,name,endpoint,region,bucket,prefix,access_key_id,secret_access_key,session_token) VALUES ('store','R2',NULL,'auto','media','','visible-access','private-secret','private-session')",
+                [],
+            )?;
+            connection.execute(
+                "INSERT INTO libraries(id,name,path,kind,object_store_id) VALUES ('bucket-library','R2','s3://store/','movies','store')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (status, body) = s.call("GET", "/ObjectStores", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let serialized = body.to_string();
+    assert!(!serialized.contains("visible-access"));
+    assert!(!serialized.contains("private-secret"));
+    assert!(!serialized.contains("private-session"));
+    assert_eq!(body[0]["Bucket"], "media");
+}
+
+#[tokio::test]
 async fn remote_playback_uses_local_hls_and_static_upstream_input() {
     let s = TestServer::new().await;
     s.state.db.call(|c| {
@@ -690,9 +717,13 @@ async fn created_users_are_immediately_listed_on_both_users_routes() {
     for route in ["/Users", "/Users/"] {
         let (status, users) = s.call("GET", route, None).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(users.as_array().unwrap().iter().any(|user| {
-            user["Id"] == created["Id"] && user["Name"] == "listed-viewer"
-        }));
+        assert!(
+            users
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|user| { user["Id"] == created["Id"] && user["Name"] == "listed-viewer" })
+        );
     }
 }
 
@@ -1131,7 +1162,7 @@ fn upgrades_old_databases_before_creating_new_indexes() {
         assert_eq!(
             c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            6
+            7
         );
         assert_eq!(
             c.query_row("SELECT name FROM items WHERE id='existing'", [], |r| r

@@ -93,7 +93,7 @@ struct Candidate {
     size: i64,
     modified: i64,
 }
-fn media_extension(path: &std::path::Path, kind: &str) -> Option<String> {
+pub(crate) fn media_extension(path: &std::path::Path, kind: &str) -> Option<String> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
     let supported = if kind == "music" {
         [
@@ -399,7 +399,7 @@ async fn reconcile_local_duplicates(state: &AppState, library: &str) -> Result<u
         })
         .await
 }
-async fn probe(executable: &str, path: &str) -> Option<(Option<i64>, String)> {
+pub(crate) async fn probe(executable: &str, path: &str) -> Option<(Option<i64>, String)> {
     use tokio::io::AsyncReadExt;
     const MAX_OUTPUT: u64 = 1024 * 1024;
     let mut child = Command::new(executable)
@@ -461,7 +461,7 @@ pub fn root_identity(metadata: &std::fs::Metadata) -> Option<String> {
     }
 }
 
-async fn ensure_hierarchy(
+pub(crate) async fn ensure_hierarchy(
     state: &AppState,
     library: &str,
     root: &str,

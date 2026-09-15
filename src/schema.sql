@@ -8,10 +8,16 @@ CREATE TABLE IF NOT EXISTS sessions(
     expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+CREATE TABLE IF NOT EXISTS object_stores(
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, endpoint TEXT, region TEXT NOT NULL,
+    bucket TEXT NOT NULL, prefix TEXT NOT NULL DEFAULT '',
+    access_key_id TEXT NOT NULL, secret_access_key TEXT NOT NULL, session_token TEXT
+);
 CREATE TABLE IF NOT EXISTS libraries(
     id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE,
     kind TEXT NOT NULL CHECK(kind IN ('movies','tvshows','music','homevideos')),
-    root_identity TEXT, remote_server_id TEXT, remote_item_id TEXT
+    root_identity TEXT, remote_server_id TEXT, remote_item_id TEXT,
+    object_store_id TEXT REFERENCES object_stores(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS remote_servers(
     id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL UNIQUE,
@@ -59,4 +65,4 @@ CREATE INDEX IF NOT EXISTS user_data_item ON user_data(item_id);
 CREATE INDEX IF NOT EXISTS playlist_items_item ON playlist_items(item_id);
 CREATE INDEX IF NOT EXISTS playback_tickets_item ON playback_tickets(item_id);
 CREATE INDEX IF NOT EXISTS sessions_user_expiry ON sessions(user_id,expires_at);
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;

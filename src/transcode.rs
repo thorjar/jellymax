@@ -485,20 +485,64 @@ async fn complete_segment(path: &Path, directory: &Path, index: u64) -> bool {
     let has_bytes = tokio::fs::metadata(path)
         .await
         .is_ok_and(|metadata| metadata.len() > 0);
-    has_bytes
-        && (tokio::fs::metadata(directory.join(format!("{}.m4s", index + 1)))
-            .await
-            .is_ok()
-            || tokio::fs::metadata(directory.join("main.m3u8"))
-                .await
-                .is_ok())
+    if !has_bytes {
+        return false;
+    }
+    if tokio::fs::metadata(directory.join(format!("{}.m4s", index + 1)))
+        .await
+        .is_ok()
+    {
+        return true;
+    }
+    // FFmpeg appends a segment to its media playlist only after closing it.
+    // Merely checking that the playlist exists can expose a partially-written
+    // fragment, which hls.js reports as fragParsingError on slower hosts.
+    tokio::fs::read_to_string(directory.join("main.m3u8"))
+        .await
+        .is_ok_and(|playlist| {
+            playlist
+                .lines()
+                .any(|line| line.trim() == format!("{index}.m4s"))
+        })
+}
+
+fn complete_mp4_init(bytes: &[u8]) -> bool {
+    let mut offset = 0usize;
+    let mut has_moov = false;
+    while offset + 8 <= bytes.len() {
+        let short_size = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as u64;
+        let kind = &bytes[offset + 4..offset + 8];
+        let (size, header) = if short_size == 1 {
+            if offset + 16 > bytes.len() {
+                return false;
+            }
+            (
+                u64::from_be_bytes(bytes[offset + 8..offset + 16].try_into().unwrap()),
+                16u64,
+            )
+        } else {
+            (short_size, 8u64)
+        };
+        if size < header || size > usize::MAX as u64 {
+            return false;
+        }
+        let Some(end) = offset.checked_add(size as usize) else {
+            return false;
+        };
+        if end > bytes.len() {
+            return false;
+        }
+        has_moov |= kind == b"moov";
+        offset = end;
+    }
+    has_moov && offset == bytes.len()
 }
 
 async fn output_ready(path: &Path, directory: &Path, index: u64, init_only: bool) -> bool {
     if init_only {
-        tokio::fs::metadata(path)
+        tokio::fs::read(path)
             .await
-            .is_ok_and(|metadata| metadata.len() > 0)
+            .is_ok_and(|bytes| complete_mp4_init(&bytes))
     } else {
         complete_segment(path, directory, index).await
     }
@@ -631,6 +675,38 @@ pub const fn segment_seconds() -> u64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn mp4_init_is_ready_only_when_the_moov_box_is_complete() {
+        let mut init = Vec::new();
+        init.extend_from_slice(&[0, 0, 0, 12]);
+        init.extend_from_slice(b"ftyp");
+        init.extend_from_slice(b"test");
+        init.extend_from_slice(&[0, 0, 0, 12]);
+        init.extend_from_slice(b"moov");
+        init.extend_from_slice(b"data");
+        assert!(complete_mp4_init(&init));
+        assert!(!complete_mp4_init(&init[..init.len() - 1]));
+        assert!(!complete_mp4_init(&init[..12]));
+    }
+
+    #[tokio::test]
+    async fn segment_is_ready_only_after_ffmpeg_publishes_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let segment = temp.path().join("4.m4s");
+        tokio::fs::write(&segment, b"partial").await.unwrap();
+        tokio::fs::write(temp.path().join("main.m3u8"), b"#EXTM3U\n3.m4s\n")
+            .await
+            .unwrap();
+        assert!(!complete_segment(&segment, temp.path(), 4).await);
+        tokio::fs::write(
+            temp.path().join("main.m3u8"),
+            b"#EXTM3U\n#EXTINF:6,\n4.m4s\n",
+        )
+        .await
+        .unwrap();
+        assert!(complete_segment(&segment, temp.path(), 4).await);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn a_distant_seek_replaces_an_unstarted_worker_without_waiting_for_timeout() {
@@ -648,7 +724,7 @@ for argument in "$@"; do
   last="$argument"
 done
 directory="${last%/*}"
-printf init > "$directory/init.mp4"
+printf '\000\000\000\014ftypdata\000\000\000\014moovdata' > "$directory/init.mp4"
 sleep 0.3
 printf segment > "$directory/$start.m4s"
 next=$((start + 1))

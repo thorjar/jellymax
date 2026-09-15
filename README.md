@@ -113,3 +113,7 @@ python3 scripts/smoke.py
 ```
 
 The smoke test generates a one-second video with FFmpeg, starts the real binary on a temporary local port, creates an administrator and library, probes the media, checks byte-range streaming and resume, then stops the process and removes its temporary files. Integration tests use disposable SQLite databases and test authentication, authorization, persistence, scanning, playlists, assets, and streaming. No production media is needed.
+
+## S3-compatible object storage
+
+Administrators can connect private AWS S3 and Cloudflare R2 buckets from **Administration → Object storage**. Each connection becomes a media library and supports direct range streaming, FFmpeg playback, metadata scans, and embedded subtitle extraction without downloading the media into Jellymax's persistent storage. See [DEPLOYMENT.md](DEPLOYMENT.md#aws-s3-and-cloudflare-r2-media) for credentials and endpoint setup.

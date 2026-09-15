@@ -1,5 +1,5 @@
 :8080 {
-    @api path /health /System/* /Users /Users/* /Sessions/* /Library/* /ScheduledTasks /Items/* /Items /Recommendations /Videos/* /Audio/* /Playlists/* /Playlists /RemoteServers/* /RemoteServers /RemoteItems/*
+    @api path /health /System/* /Users /Users/* /Sessions/* /Library/* /ScheduledTasks /Items/* /Items /Recommendations /Videos/* /Audio/* /Playlists/* /Playlists /RemoteServers/* /RemoteServers /RemoteItems/* /ObjectStores /ObjectStores/* /ObjectItems/*
 
     handle @api {
         reverse_proxy backend:8097

@@ -26,8 +26,9 @@ pub async fn info(
     body: Option<Json<PlaybackRequest>>,
 ) -> Result<Json<Value>> {
     let remote = crate::remote::for_item(&state, &item).await?.is_some();
+    let object = crate::object_storage::is_item(&state, &item).await;
     let _ = body;
-    let mut external_streams = if remote {
+    let mut external_streams = if remote || object {
         Vec::new()
     } else {
         crate::assets::subtitle_streams(&state, &item).await?
@@ -79,7 +80,13 @@ pub async fn info(
             capabilities.supports_eac3,
         );
         let route=if kind=="Audio"{"Audio"}else{"Videos"};
-        let direct_url = if remote { format!("/RemoteItems/{item}/stream?PlaybackTicket={ticket}") } else { format!("/{route}/{item}/stream?PlaybackTicket={ticket}") };
+        let direct_url = if remote {
+            format!("/RemoteItems/{item}/stream?PlaybackTicket={ticket}")
+        } else if object {
+            format!("/ObjectItems/{item}/stream?PlaybackTicket={ticket}")
+        } else {
+            format!("/{route}/{item}/stream?PlaybackTicket={ticket}")
+        };
         let codec = |stream_type: &str| streams.iter().find(|stream| stream["Type"] == stream_type)
             .and_then(|stream| stream["Codec"].as_str()).unwrap_or("").to_ascii_lowercase();
         let video_codec = codec("Video");
@@ -178,16 +185,20 @@ async fn sparse_keyframes(state: &AppState, item: &str, size: i64, runtime_ticks
     if let Some(result) = state.keyframe_safety.lock().unwrap().get(&key).copied() {
         return result;
     }
-    let remote = match crate::remote::ffmpeg_source(state, item).await {
-        Ok(remote) => remote,
-        Err(_) => return false,
+    let resolved = match crate::remote::ffmpeg_source(state, item).await {
+        Ok(Some(source)) => Some(source),
+        Ok(None) => match crate::object_storage::ffmpeg_source(state, item).await {
+            Ok(source) => source,
+            Err(_) => return true,
+        },
+        Err(_) => return true,
     };
-    let (source, headers) = if let Some((source, headers)) = remote {
+    let (source, headers) = if let Some((source, headers)) = resolved {
         (source.into(), headers)
     } else {
         match media_path(state, item.to_owned()).await {
             Ok(path) => (path.into_os_string(), None),
-            Err(_) => return false,
+            Err(_) => return true,
         }
     };
     let mut command = Command::new(&state.ffprobe);
@@ -412,15 +423,19 @@ async fn ffmpeg_stream(
         .acquire_owned()
         .await
         .map_err(|_| Error::internal("Transcoding queue is unavailable"))?;
-    let (source, source_headers) =
-        if let Some(source) = crate::remote::ffmpeg_source(&state, &item).await? {
-            (source.0.into(), source.1)
-        } else {
-            (
-                media_path(&state, item.clone()).await?.into_os_string(),
-                None,
-            )
-        };
+    let resolved = if let Some(source) = crate::remote::ffmpeg_source(&state, &item).await? {
+        Some(source)
+    } else {
+        crate::object_storage::ffmpeg_source(&state, &item).await?
+    };
+    let (source, source_headers) = if let Some(source) = resolved {
+        (source.0.into(), source.1)
+    } else {
+        (
+            media_path(&state, item.clone()).await?.into_os_string(),
+            None,
+        )
+    };
     let mut command = Command::new(&state.ffmpeg);
     command.args(["-hide_banner", "-loglevel", "warning", "-nostdin"]);
     if let Some(seconds) = start_seconds.filter(|seconds| *seconds > 0.0) {
@@ -651,15 +666,19 @@ pub async fn hls_segment(
     let request = crate::tickets::authorize(&state, &item, request).await?;
     playback_mode(&query.mode)?;
     validate_audio_stream_index(&state, &item, query.audio_stream_index).await?;
-    let (source, source_headers) =
-        if let Some(source) = crate::remote::ffmpeg_source(&state, &item).await? {
-            (source.0.into(), source.1)
-        } else {
-            (
-                media_path(&state, item.clone()).await?.into_os_string(),
-                None,
-            )
-        };
+    let resolved = if let Some(source) = crate::remote::ffmpeg_source(&state, &item).await? {
+        Some(source)
+    } else {
+        crate::object_storage::ffmpeg_source(&state, &item).await?
+    };
+    let (source, source_headers) = if let Some(source) = resolved {
+        (source.0.into(), source.1)
+    } else {
+        (
+            media_path(&state, item.clone()).await?.into_os_string(),
+            None,
+        )
+    };
     let session_request = || crate::transcode::SessionRequest {
         ffmpeg: &state.ffmpeg,
         gate: state.transcode_gate.clone(),
@@ -687,11 +706,26 @@ pub async fn hls_segment(
             .segment(session_request(), index)
             .await?
     };
-    let response = ServeFile::new(output)
+    let content_type = if segment == "init.mp4" {
+        "video/mp4"
+    } else {
+        "video/iso.segment"
+    };
+    let mut response = ServeFile::new(output)
         .oneshot(request)
         .await
-        .map_err(Error::internal)?;
-    Ok(response.map(Body::new).into_response())
+        .map_err(Error::internal)?
+        .map(Body::new)
+        .into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static(content_type),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    Ok(response)
 }
 // Resolve the catalog path again on every request so replaced symlinks cannot expose files outside the library.
 pub async fn media_path(state: &AppState, item: String) -> Result<PathBuf> {
@@ -733,6 +767,9 @@ pub async fn stream(
     Path(item): Path<String>,
     request: Request,
 ) -> Result<Response> {
+    if crate::object_storage::is_item(&state, &item).await {
+        return crate::object_storage::stream(State(state), Path(item), request).await;
+    }
     let request = crate::tickets::authorize(&state, &item, request).await?;
     let path = media_path(&state, item).await?;
     let response = ServeFile::new(path)

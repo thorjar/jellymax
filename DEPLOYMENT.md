@@ -39,6 +39,14 @@ Create a library using an **inside-container** path such as `/media`, `/media/Mo
 
 `JELLYMAX_TMDB_API_KEY` and `JELLYMAX_OPENSUBTITLES_API_KEY` are optional. Put them in `.env` before `docker compose up -d`; the file is ignored by Git. `JELLYMAX_NAME` changes the displayed server name.
 
+## AWS S3 and Cloudflare R2 media
+
+After the first administrator is created, open **Administration → Object storage**. Choose AWS S3 or Cloudflare R2, enter a bucket and optional folder prefix, and select the library type. Jellymax tests the credentials, scans supported media objects, and adds the bucket as a library. A later **Sync** only probes objects whose size or modification time changed. Disconnecting removes Jellymax's catalog records and never deletes objects from the bucket.
+
+For R2, use `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` as the endpoint and `auto` as the region. Create an R2 API token with Object Read permission for the chosen bucket and use its Access Key ID and Secret Access Key. For AWS S3, leave the endpoint blank, enter the bucket's AWS region, and use credentials with `s3:ListBucket` and `s3:GetObject` permission. Limit credentials to the bucket and prefix Jellymax needs.
+
+Object media is streamed through Jellymax, so the bucket can remain private and browser credentials are never exposed. Direct play uses HTTP byte ranges; FFmpeg reads the same private proxy for remuxing, transcoding, probing, and embedded subtitle extraction. The SQLite database stores the server-side credentials in `/data`, so protect and back up the `server_data` volume accordingly. Media objects are not copied into that volume.
+
 ## Storage and exposure
 
 The `server_data` Docker volume persists the SQLite database, artwork, and configuration across container rebuilds. The media bind mount is read-only. Transcode segments use a separate 256 MiB tmpfs mounted over `/data/transcodes`; they do not persist in `server_data`. The application's default 192 MiB transcode cache limit leaves room below that tmpfs ceiling. If you change `JELLYMAX_TRANSCODE_CACHE_MB`, also set `JELLYMAX_TRANSCODE_TMPFS_BYTES` higher than the cache limit in bytes, with headroom for writes between checks. Temporary transcoding consumes memory and may fail when the memory limit is reached.

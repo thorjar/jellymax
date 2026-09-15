@@ -251,6 +251,8 @@ async fn embedded_subtitle(
         crate::remote::embedded_subtitle_source(state, item, index, codec).await?
     {
         (url.into(), headers, ordinal)
+    } else if let Some((url, headers)) = crate::object_storage::ffmpeg_source(state, item).await? {
+        (url.into(), headers, local_ordinal)
     } else {
         (
             media_path(state, item.to_owned()).await?.into_os_string(),

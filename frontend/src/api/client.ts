@@ -13,6 +13,8 @@ import type {
   User,
   UserData,
   SubtitleSearchResult,
+  ObjectStoreConnection,
+  NewObjectStore,
 } from "./types";
 
 const TOKEN_KEY = "jellymax_token";
@@ -159,6 +161,15 @@ export const api = {
     }),
   syncRemote: (id: string) => request<{ Items: number }>(`/RemoteServers/${encodeURIComponent(id)}/Sync`, { method: "POST" }),
   removeRemote: (id: string) => request<void>(`/RemoteServers/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  objectStores: () => request<ObjectStoreConnection[]>("/ObjectStores"),
+  connectObjectStore: (input: NewObjectStore) =>
+    request<{ Id: string; LibraryId: string }>("/ObjectStores", {
+      method: "POST", body: JSON.stringify(input),
+    }),
+  syncObjectStore: (id: string) =>
+    request<{ Items: number }>(`/ObjectStores/${encodeURIComponent(id)}/Sync`, { method: "POST" }),
+  removeObjectStore: (id: string) =>
+    request<void>(`/ObjectStores/${encodeURIComponent(id)}`, { method: "DELETE" }),
   // Admin-only: re-run the TMDb match for one movie. Matched=false means
   // TMDb had no plausible hit (the item keeps whatever metadata it had).
   refreshMetadata: (id: string, name?: string, year?: number) => {

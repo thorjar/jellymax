@@ -14,7 +14,7 @@ impl Database {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 6 {
+        if version > 7 {
             return Err(Error::internal(
                 "Database was created by a newer server version",
             ));
@@ -26,6 +26,16 @@ impl Database {
             migrate_items_parent(&tx)?;
             migrate_remote_columns(&tx)?;
             migrate_remote_device(&tx)?;
+            let object_store_column: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('libraries') WHERE name='object_store_id')",
+                [], |row| row.get(0),
+            )?;
+            if !object_store_column {
+                tx.execute(
+                    "ALTER TABLE libraries ADD COLUMN object_store_id TEXT REFERENCES object_stores(id) ON DELETE CASCADE",
+                    [],
+                )?;
+            }
             for column in ["index_number", "parent_index_number"] {
                 let exists: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM pragma_table_info('items') WHERE name=?1)",

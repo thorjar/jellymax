@@ -131,7 +131,7 @@ export function LibraryAdmin() {
                 <div>
                   <h3 className="font-semibold">{group.name}</h3>
                   <p className="text-xs text-ink-muted">
-                    {group.isLocal ? "Local server" : "Connected Jellyfin server"} · {group.libraries.length} {group.libraries.length === 1 ? "library" : "libraries"}
+                    {group.isLocal ? "Local server" : group.libraries[0]?.IsObjectStore ? "Object storage" : "Connected Jellyfin server"} · {group.libraries.length} {group.libraries.length === 1 ? "library" : "libraries"}
                   </p>
                 </div>
               </div>

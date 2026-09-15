@@ -32,6 +32,7 @@ export interface Library {
   Locations: string[];
   IsRemote: boolean;
   RemoteServerName?: string | null;
+  IsObjectStore?: boolean;
 }
 
 export interface MediaStream {
@@ -175,4 +176,26 @@ export interface RemoteServer {
   ServerId: string;
   LastSync?: number | null;
   LastError?: string | null;
+}
+
+export interface ObjectStoreConnection {
+  Id: string;
+  Name: string;
+  Endpoint?: string | null;
+  Region: string;
+  Bucket: string;
+  Prefix: string;
+  LibraryId: string;
+}
+
+export interface NewObjectStore {
+  Name: string;
+  Endpoint?: string | null;
+  Region: string;
+  Bucket: string;
+  Prefix?: string;
+  AccessKeyId: string;
+  SecretAccessKey: string;
+  SessionToken?: string;
+  CollectionType: string;
 }

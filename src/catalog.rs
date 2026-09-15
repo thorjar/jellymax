@@ -22,6 +22,7 @@ pub struct Library {
     pub locations: Vec<String>,
     pub is_remote: bool,
     pub remote_server_name: Option<String>,
+    pub is_object_store: bool,
 }
 pub async fn libraries(auth: Auth, State(state): State<AppState>) -> Result<Json<Vec<Library>>> {
     let admin = auth.user.policy.is_administrator;
@@ -29,8 +30,10 @@ pub async fn libraries(auth: Auth, State(state): State<AppState>) -> Result<Json
         .db
         .call(move |c| {
             let mut s = c.prepare(
-                "SELECT l.id,l.name,l.kind,l.path,l.remote_server_id,s.name
+                "SELECT l.id,l.name,l.kind,l.path,l.remote_server_id,
+                        COALESCE(s.name,o.name),l.object_store_id IS NOT NULL
                  FROM libraries l LEFT JOIN remote_servers s ON s.id=l.remote_server_id
+                 LEFT JOIN object_stores o ON o.id=l.object_store_id
                  ORDER BY l.name,l.id",
             )?;
             let rows = s
@@ -39,13 +42,18 @@ pub async fn libraries(auth: Auth, State(state): State<AppState>) -> Result<Json
                         item_id: r.get(0)?,
                         name: r.get(1)?,
                         collection_type: r.get(2)?,
-                        locations: if admin && r.get::<_, Option<String>>(4)?.is_none() {
+                        locations: if admin
+                            && r.get::<_, Option<String>>(4)?.is_none()
+                            && !r.get::<_, bool>(6)?
+                        {
                             vec![r.get(3)?]
                         } else {
                             vec![]
                         },
-                        is_remote: r.get::<_, Option<String>>(4)?.is_some(),
+                        is_remote: r.get::<_, Option<String>>(4)?.is_some()
+                            || r.get::<_, bool>(6)?,
                         remote_server_name: r.get(5)?,
+                        is_object_store: r.get(6)?,
                     })
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;

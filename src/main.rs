@@ -94,6 +94,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(ffmpeg) = ffmpeg {
                 state.ffmpeg = ffmpeg;
             }
+            let listener = tokio::net::TcpListener::bind(bind).await?;
+            *state.internal_origin.write().await =
+                format!("http://127.0.0.1:{}", listener.local_addr()?.port());
             let mut app = router(state);
             if let Some(web_dir) = web_dir.filter(|path| path.is_dir()) {
                 let index = web_dir.join("index.html");
@@ -124,7 +127,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ]),
                 );
             }
-            let listener = tokio::net::TcpListener::bind(bind).await?;
             tracing::info!(address=%listener.local_addr()?,"Media server listening");
             axum::serve(listener, app)
                 .with_graceful_shutdown(shutdown())
