@@ -127,10 +127,20 @@ export function Player({ item }: PlayerProps) {
   }, [item.Id, isAudio]);
 
   useEffect(() => {
-    const onFullscreenChange = () => setFullscreen(document.fullscreenElement === frameRef.current);
+    const onFullscreenChange = () => {
+      setFullscreen(document.fullscreenElement === frameRef.current);
+      setControlsVisible(true);
+    };
     document.addEventListener("fullscreenchange", onFullscreenChange);
     return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
   }, []);
+
+  useEffect(() => {
+    if (!fullscreen || !playing || subtitleMenuOpen || audioMenuOpen) return;
+    window.clearTimeout(controlsTimer.current);
+    controlsTimer.current = window.setTimeout(() => setControlsVisible(false), 2500);
+    return () => window.clearTimeout(controlsTimer.current);
+  }, [fullscreen, playing, subtitleMenuOpen, audioMenuOpen]);
 
   useEffect(() => {
     const video = mediaRef.current;
@@ -509,11 +519,11 @@ export function Player({ item }: PlayerProps) {
   return <div className={`mx-auto ${isAudio ? "max-w-2xl" : "max-w-4xl"}`}>
     {isAudio ? <audio {...commonProps} ref={mediaRef as RefObject<HTMLAudioElement>}
       className="w-full rounded-xl border border-edge bg-surface-raised p-3" />
-      : <div ref={frameRef} className="group relative overflow-hidden rounded-xl border border-edge bg-black shadow-lg"
+      : <div ref={frameRef} className={`group relative overflow-hidden bg-black ${fullscreen ? "rounded-none border-0 shadow-none" : "rounded-xl border border-edge shadow-lg"} ${fullscreen && !playerControlsShown ? "cursor-none" : ""}`}
           onMouseMove={revealControls} onMouseLeave={() => { if (playing && !subtitleMenuOpen && !audioMenuOpen) setControlsVisible(false); }}
           onFocusCapture={revealControls} onContextMenu={(event) => event.preventDefault()}>
           <video {...commonProps} ref={mediaRef as RefObject<HTMLVideoElement>}
-            className="aspect-video w-full cursor-pointer bg-black object-contain" playsInline
+            className={`aspect-video w-full bg-black object-contain ${fullscreen && !playerControlsShown ? "cursor-none" : "cursor-pointer"}`} playsInline
             onClick={togglePlayback}>
             {subtitleUrl && <track ref={subtitleTrackRef} key={selectedSubtitle} kind="subtitles" src={subtitleUrl}
               srcLang={typeof selectedSubtitle === "string"
