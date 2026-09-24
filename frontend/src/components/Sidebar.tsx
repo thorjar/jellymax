@@ -72,7 +72,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         <span>Jelly<span className="text-brand-strong">max</span></span>
       </Link>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 [scrollbar-width:thin]">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 scrollbar-thin">
         <nav className="space-y-1" aria-label="Primary">
           <NavItem to="/" end icon={ICONS.home} onNavigate={onNavigate}>Home</NavItem>
           <NavItem to="/libraries" icon={ICONS.folder} onNavigate={onNavigate}>Libraries</NavItem>

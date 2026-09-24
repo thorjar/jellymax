@@ -199,6 +199,171 @@ async fn remote_external_srt_is_fetched_in_original_format_and_served_as_vtt() {
     server.abort();
 }
 
+/// Fetches an item's artwork through the app and returns the raw body.
+async fn artwork(s: &TestServer, item: &str, kind: &str) -> (StatusCode, String) {
+    let request = Request::builder()
+        .uri(format!("/Items/{item}/Images/{kind}"))
+        .header("X-Emby-Token", &s.token)
+        .body(Body::empty())
+        .unwrap();
+    let response = s.app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Inserts the remote server, library, and items used by the artwork tests.
+async fn remote_artwork_server(address: std::net::SocketAddr, items: &str) -> TestServer {
+    let s = TestServer::new().await;
+    let items = items.to_owned();
+    s.state
+        .db
+        .call(move |c| {
+            c.execute("INSERT INTO remote_servers(id,name,base_url,server_id,user_id,access_token,device_id) VALUES ('remote','Remote',?1,'upstream','remote-user','secret','device')", [format!("http://{address}")])?;
+            c.execute("INSERT INTO libraries(id,name,path,kind,remote_server_id,remote_item_id) VALUES ('remote-library','Remote','remote://library','movies','remote','view')", [])?;
+            c.execute_batch(&items)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    s
+}
+
+/// The backdrop endpoint must ask the remote server for 16:9 artwork: proxying
+/// its primary poster is what made landscape rails crop portrait images.
+#[tokio::test]
+async fn remote_artwork_proxies_the_image_kind_that_was_requested() {
+    let upstream = Router::new()
+        .route(
+            "/Items/abcd/Images/Backdrop",
+            axum::routing::get(|| async { "remote-backdrop" }),
+        )
+        .route(
+            "/Items/abcd/Images/Primary",
+            axum::routing::get(|| async { "remote-primary" }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let s = remote_artwork_server(
+        address,
+        "INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,scan_id,remote_server_id,remote_item_id) VALUES ('remote-movie','remote-library','remote://movie','Movie','Movie','mp4',100,0,10000000,'[]','scan','remote','abcd');",
+    )
+    .await;
+    assert_eq!(
+        artwork(&s, "remote-movie", "Backdrop").await,
+        (StatusCode::OK, "remote-backdrop".into())
+    );
+    assert_eq!(
+        artwork(&s, "remote-movie", "Primary").await,
+        (StatusCode::OK, "remote-primary".into())
+    );
+    server.abort();
+}
+
+/// Seasons have no backdrop of their own, and episodes keep their still in the
+/// primary image, so landscape rails borrow the nearest usable ancestor art.
+#[tokio::test]
+async fn remote_landscape_artwork_borrows_ancestor_backdrops() {
+    let upstream = Router::new()
+        .route(
+            "/Items/series/Images/Backdrop",
+            axum::routing::get(|| async { "series-backdrop" }),
+        )
+        .route(
+            "/Items/season/Images/Backdrop",
+            axum::routing::get(|| async { StatusCode::NOT_FOUND }),
+        )
+        .route(
+            "/Items/season/Images/Primary",
+            axum::routing::get(|| async { "season-poster" }),
+        )
+        .route(
+            "/Items/episode/Images/Backdrop",
+            axum::routing::get(|| async { StatusCode::NOT_FOUND }),
+        )
+        .route(
+            "/Items/episode/Images/Primary",
+            axum::routing::get(|| async { "episode-still" }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let s = remote_artwork_server(
+        address,
+        "INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,scan_id,remote_server_id,remote_item_id) VALUES ('remote-series','remote-library','remote://series','Series','Series','mp4',100,0,10000000,'[]','scan','remote','series');
+         INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,scan_id,remote_server_id,remote_item_id,parent_id) VALUES ('remote-season','remote-library','remote://season','Season','Season','mp4',100,0,10000000,'[]','scan','remote','season','remote-series');
+         INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,scan_id,remote_server_id,remote_item_id,parent_id) VALUES ('remote-episode','remote-library','remote://episode','Episode','Episode','mp4',100,0,10000000,'[]','scan','remote','episode','remote-season');",
+    )
+    .await;
+    assert_eq!(
+        artwork(&s, "remote-series", "Backdrop").await,
+        (StatusCode::OK, "series-backdrop".into())
+    );
+    // A season's own portrait poster must never be served as landscape art.
+    assert_eq!(
+        artwork(&s, "remote-season", "Backdrop").await,
+        (StatusCode::OK, "series-backdrop".into())
+    );
+    assert_eq!(
+        artwork(&s, "remote-episode", "Backdrop").await,
+        (StatusCode::OK, "episode-still".into())
+    );
+    server.abort();
+}
+
+/// A remote movie whose server has no backdrop must fall back to TMDb
+/// landscape art rather than the portrait poster that landscape cards crop.
+#[tokio::test]
+async fn remote_movie_landscape_artwork_falls_back_to_tmdb() {
+    let upstream = Router::new()
+        .route(
+            "/Items/nobd/Images/Backdrop",
+            axum::routing::get(|| async { StatusCode::NOT_FOUND }),
+        )
+        .route(
+            "/Items/nobd/Images/Primary",
+            axum::routing::get(|| async { "remote-poster" }),
+        )
+        .route(
+            "/movie/123",
+            axum::routing::get(|| async {
+                axum::Json(json!({"id":123,"backdrop_path":"/movie-backdrop.jpg"}))
+            }),
+        )
+        .route(
+            "/images/w780/movie-backdrop.jpg",
+            axum::routing::get(|| async { "tmdb-backdrop" }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let mut s = remote_artwork_server(
+        address,
+        "INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,scan_id,remote_server_id,remote_item_id,tmdb_id) VALUES ('remote-nobd','remote-library','remote://nobd','No Backdrop','Movie','mp4',100,0,10000000,'[]','scan','remote','nobd','123');",
+    )
+    .await;
+    s.state.tmdb = TmdbConfig {
+        api_key: Some("test-key".into()),
+        api_base: format!("http://{address}"),
+        // Mirrors the real `.../t/p/w500` shape: the size segment is replaced.
+        image_base: format!("http://{address}/images/w500"),
+        ..Default::default()
+    };
+    s.app = router(s.state.clone());
+    let path = jellymax::tmdb::backdrop_path(&s.state, "movie/123").await;
+    assert_eq!(path.as_deref(), Some("/movie-backdrop.jpg"));
+    assert_eq!(
+        artwork(&s, "remote-nobd", "Backdrop").await,
+        (StatusCode::OK, "tmdb-backdrop".into())
+    );
+    assert_eq!(
+        artwork(&s, "remote-nobd", "Primary").await,
+        (StatusCode::OK, "remote-poster".into())
+    );
+    server.abort();
+}
+
 #[tokio::test]
 async fn remote_embedded_subrip_uses_the_media_source_that_advertised_it() {
     let dir = TempDir::new().unwrap();
@@ -702,6 +867,166 @@ async fn user_data_is_private_and_survives_rescanning() {
         StatusCode::BAD_REQUEST
     );
 }
+
+#[tokio::test]
+async fn marking_unplayed_resets_the_resume_position() {
+    let s = TestServer::new().await;
+    let item = s.item().await;
+    // Position without played: the item is in Continue Watching.
+    assert_eq!(
+        s.call(
+            "POST",
+            "/Sessions/Playing/Progress",
+            Some(json!({"ItemId":item,"PositionTicks":12345}))
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let (_, resume) = s
+        .call("GET", &format!("/Users/{}/Items/Resume", s.user), None)
+        .await;
+    assert_eq!(resume["TotalRecordCount"], 1);
+    // "Remove from Continue Watching" is a mark-unplayed call; it must clear
+    // the stored position like Jellyfin, or the item would remain resumable.
+    let (_, userdata) = s
+        .call(
+            "DELETE",
+            &format!("/Users/{}/PlayedItems/{item}", s.user),
+            None,
+        )
+        .await;
+    assert_eq!(userdata["PlaybackPositionTicks"], 0);
+    assert_eq!(userdata["Played"], false);
+    let (_, resume) = s
+        .call("GET", &format!("/Users/{}/Items/Resume", s.user), None)
+        .await;
+    assert_eq!(resume["TotalRecordCount"], 0);
+    // Play/unplay again: the position stays cleared.
+    s.call(
+        "POST",
+        &format!("/Users/{}/PlayedItems/{item}", s.user),
+        None,
+    )
+    .await;
+    s.call(
+        "DELETE",
+        &format!("/Users/{}/PlayedItems/{item}", s.user),
+        None,
+    )
+    .await;
+    let (_, item_data) = s.call("GET", &format!("/Items/{item}"), None).await;
+    assert_eq!(item_data["UserData"]["PlaybackPositionTicks"], 0);
+}
+#[tokio::test]
+async fn pairing_codes_are_single_use_and_sign_in_the_approving_user() {
+    let s = TestServer::new().await;
+    let (other, other_token) = s.other_user().await;
+    let (status, initiated) = send(
+        &s.app,
+        "POST",
+        "/QuickConnect/Initiate",
+        None,
+        Some(json!({"DeviceName":"Apple TV"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let code = initiated["Code"].as_str().unwrap().to_string();
+    assert_eq!(code.len(), 8);
+    assert_eq!(initiated["ExpiresIn"], 300);
+    // The code does nothing until a signed-in user approves it.
+    let (status, pending) = send(
+        &s.app,
+        "GET",
+        &format!("/QuickConnect/Connect?Code={code}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(pending["Authenticated"], false);
+    assert_eq!(
+        send(
+            &s.app,
+            "POST",
+            "/QuickConnect/Approve",
+            None,
+            Some(json!({"Code":code}))
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        send(
+            &s.app,
+            "POST",
+            "/QuickConnect/Approve",
+            Some(&other_token),
+            Some(json!({"Code":"ZZZZZZZZ"}))
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    // Codes are read off a screen, so spacing and case are ignored.
+    let spaced = format!("{} {}", &code[..4], &code[4..]).to_lowercase();
+    assert_eq!(
+        send(
+            &s.app,
+            "POST",
+            "/QuickConnect/Approve",
+            Some(&other_token),
+            Some(json!({"Code":spaced}))
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    // A second user cannot take over an approved code.
+    assert_eq!(
+        send(
+            &s.app,
+            "POST",
+            "/QuickConnect/Approve",
+            Some(&s.token),
+            Some(json!({"Code":code}))
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let (status, claimed) = send(
+        &s.app,
+        "GET",
+        &format!("/QuickConnect/Connect?Code={code}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(claimed["Authenticated"], true);
+    assert_eq!(claimed["User"]["Id"], other.as_str());
+    assert_eq!(claimed["User"]["Policy"]["IsAdministrator"], false);
+    let token = claimed["AccessToken"].as_str().unwrap().to_string();
+    let (status, me) = send(&s.app, "GET", "/Users/Me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(me["Id"], other.as_str());
+    // Claiming consumes the code.
+    assert_eq!(
+        send(
+            &s.app,
+            "GET",
+            &format!("/QuickConnect/Connect?Code={code}"),
+            None,
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+}
+
 #[tokio::test]
 async fn created_users_are_immediately_listed_on_both_users_routes() {
     let s = TestServer::new().await;
@@ -1162,7 +1487,7 @@ fn upgrades_old_databases_before_creating_new_indexes() {
         assert_eq!(
             c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            7
+            8
         );
         assert_eq!(
             c.query_row("SELECT name FROM items WHERE id='existing'", [], |r| r

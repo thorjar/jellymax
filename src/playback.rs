@@ -630,22 +630,29 @@ pub async fn hls_manifest(
         .audio_stream_index
         .map(|index| format!("&AudioStreamIndex={index}"))
         .unwrap_or_default();
+    let video_codec = query.video_codec.as_deref().unwrap_or("");
+    let extension = crate::transcode::segment_extension(&query.mode, video_codec);
     let mut playlist = format!(
-        "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:{}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"init.mp4?PlaybackTicket={}&Mode={}&PlaySessionId={}&VideoCodec={}&StartIndex={}{}\"\n",
+        "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:{}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-INDEPENDENT-SEGMENTS\n",
         segment_seconds as u64,
-        query.playback_ticket,
-        query.mode,
-        query.play_session_id,
-        query.video_codec.as_deref().unwrap_or(""),
-        query.start_index.unwrap_or(0),
-        audio_query
     );
+    if crate::transcode::fragmented_mp4(&query.mode, video_codec) {
+        playlist.push_str(&format!(
+            "#EXT-X-MAP:URI=\"init.mp4?PlaybackTicket={}&Mode={}&PlaySessionId={}&VideoCodec={}&StartIndex={}{}\"\n",
+            query.playback_ticket,
+            query.mode,
+            query.play_session_id,
+            video_codec,
+            query.start_index.unwrap_or(0),
+            audio_query
+        ));
+    }
     for index in 0..count {
         let remaining = duration - index as f64 * segment_seconds;
         let segment_duration = remaining.min(segment_seconds);
         playlist.push_str(&format!(
-            "#EXTINF:{segment_duration:.3},\n{index}.m4s?PlaybackTicket={}&Mode={}&PlaySessionId={}&VideoCodec={}{}\n",
-            query.playback_ticket, query.mode, query.play_session_id, query.video_codec.as_deref().unwrap_or(""),
+            "#EXTINF:{segment_duration:.3},\n{index}.{extension}?PlaybackTicket={}&Mode={}&PlaySessionId={}&VideoCodec={}{}\n",
+            query.playback_ticket, query.mode, query.play_session_id, video_codec,
             audio_query
         ));
     }
@@ -690,17 +697,21 @@ pub async fn hls_segment(
         source: source.clone(),
         source_headers: source_headers.clone(),
     };
-    let output = if segment == "init.mp4" {
+    let video_codec = query.video_codec.as_deref().unwrap_or("");
+    let extension = crate::transcode::segment_extension(&query.mode, video_codec);
+    let output = if segment == "init.mp4"
+        && crate::transcode::fragmented_mp4(&query.mode, video_codec)
+    {
         state
             .transcode_sessions
             .init_segment(session_request(), query.start_index.unwrap_or(0))
             .await?
     } else {
         let index = segment
-            .strip_suffix(".m4s")
+            .strip_suffix(&format!(".{extension}"))
             .and_then(|value| value.parse::<u64>().ok())
             .ok_or_else(|| Error::bad("Invalid HLS segment"))?;
-        tracing::debug!(%item, index, mode=%query.mode, "Serving managed HLS segment");
+        tracing::debug!(%item, index, mode=%query.mode, %extension, "Serving managed HLS segment");
         state
             .transcode_sessions
             .segment(session_request(), index)
@@ -708,6 +719,8 @@ pub async fn hls_segment(
     };
     let content_type = if segment == "init.mp4" {
         "video/mp4"
+    } else if extension == "ts" {
+        "video/mp2t"
     } else {
         "video/iso.segment"
     };
@@ -830,6 +843,13 @@ async fn set_flag(
         // Column comes only from the four fixed handlers below, never from a request.
         c.execute(&format!("INSERT INTO user_data(user_id,item_id,{column},updated_at) VALUES (?1,?2,?3,?4)
             ON CONFLICT(user_id,item_id) DO UPDATE SET {column}=excluded.{column},updated_at=excluded.updated_at"),params![user,item,value,now()])?;
+        // Marking unplayed also resets the resume position, matching Jellyfin:
+        // otherwise an item stays in Continue Watching (position_ticks>0 AND
+        // played=0) after a client "Remove from Continue Watching", which uses
+        // this endpoint. The INSERT above guarantees the row exists.
+        if !value && column == "played" {
+            c.execute("UPDATE user_data SET position_ticks=0,updated_at=?2 WHERE user_id=?1 AND item_id=?3",params![user,now(),item])?;
+        }
         let data=c.query_row("SELECT position_ticks,played,favorite FROM user_data WHERE user_id=?1 AND item_id=?2",params![user,item],|r|
             Ok(json!({"PlaybackPositionTicks":r.get::<_,i64>(0)?,"Played":r.get::<_,bool>(1)?,"IsFavorite":r.get::<_,bool>(2)?})))?;
         Ok(Json(data))

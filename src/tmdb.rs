@@ -186,6 +186,72 @@ pub async fn download_poster(state: &AppState, poster_path: &str, destination: &
     false
 }
 
+/// Fetch the TMDb backdrop path for a movie/series details record.
+/// `path` is "<movie|tv>/<tmdb id>". Returns None when TMDb is not
+/// configured, the request fails, or the record has no backdrop.
+pub async fn backdrop_path(state: &AppState, path: &str) -> Option<String> {
+    let key = state
+        .tmdb
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())?;
+    let url = format!(
+        "{}/{}?api_key={}&language={}",
+        state.tmdb.api_base,
+        path,
+        percent_encode(key),
+        percent_encode(&state.tmdb.language),
+    );
+    let body = curl_text(&url).await?;
+    let data: Value = serde_json::from_str(&body).ok()?;
+    non_empty(&data["backdrop_path"])
+}
+
+/// Download a TMDb backdrop at landscape-friendly resolution. Mirrors
+/// `download_poster` but swaps the configured poster size for `w780`.
+pub async fn download_backdrop(state: &AppState, backdrop_path: &str, destination: &FsPath) -> bool {
+    if !backdrop_path.starts_with('/') || backdrop_path.contains("..") {
+        return false;
+    }
+    if let Some(parent) = destination.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return false;
+    }
+    let configured = &state.tmdb.image_base;
+    let base = match configured.rfind('/') {
+        Some(index) => &configured[..=index],
+        None => configured.as_str(),
+    };
+    let url = format!("{base}w780{backdrop_path}");
+    let temporary = destination.with_extension(format!("{}.tmp", crate::auth::id()));
+    let Ok(mut child) = Command::new(CURL)
+        .args([
+            "-sSfL",
+            "--max-time",
+            "30",
+            "--max-filesize",
+            "5242880",
+            "-o",
+        ])
+        .arg(&temporary)
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+    else {
+        return false;
+    };
+    let ok = matches!(child.wait().await, Ok(status) if status.success());
+    if ok && tokio::fs::rename(&temporary, destination).await.is_ok() {
+        return true;
+    }
+    tokio::fs::remove_file(&temporary).await.ok();
+    false
+}
+
 /// Fetch a URL with the system curl binary. Mirrors `scanner::probe`:
 /// bounded runtime, bounded output, non-zero exits and oversized bodies are
 /// all treated as failures.

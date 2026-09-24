@@ -143,28 +143,24 @@ impl Server {
         )
         .unwrap();
         assert!(manifest.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
-        assert!(manifest.contains("#EXT-X-MAP"));
         let segment = manifest
             .lines()
-            .find(|line| line.contains(".m4s?"))
+            .find(|line| line.contains(".m4s?") || line.contains(".ts?"))
             .unwrap();
         let query = segment.split_once('?').unwrap().1;
-        let init = self
-            .request(
-                "GET",
-                &format!("/Videos/{item}/hls/init.mp4?{query}"),
-                None,
-                None,
-            )
-            .await;
-        assert_eq!(init.status(), StatusCode::OK);
-        let mut output = init
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes()
-            .to_vec();
+        let mut output = Vec::new();
+        if manifest.contains("#EXT-X-MAP") {
+            let init = self
+                .request(
+                    "GET",
+                    &format!("/Videos/{item}/hls/init.mp4?{query}"),
+                    None,
+                    None,
+                )
+                .await;
+            assert_eq!(init.status(), StatusCode::OK);
+            output.extend_from_slice(&init.into_body().collect().await.unwrap().to_bytes());
+        }
         let response = self
             .request("GET", &format!("/Videos/{item}/hls/{segment}"), None, None)
             .await;
@@ -686,9 +682,9 @@ async fn sparse_keyframes_use_seekable_video_segments() {
     assert!(manifest.contains("#EXT-X-INDEPENDENT-SEGMENTS"));
     let last = manifest
         .lines()
-        .rfind(|line| line.contains(".m4s?"))
+        .rfind(|line| line.contains(".ts?"))
         .unwrap();
-    assert!(last.starts_with("7.m4s?"));
+    assert!(last.starts_with("7.ts?"));
     let response = s
         .request("GET", &format!("/Videos/sparse/hls/{last}"), None, None)
         .await;

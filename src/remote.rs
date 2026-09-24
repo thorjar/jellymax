@@ -672,13 +672,95 @@ pub async fn stream(
         .body(Body::from_stream(stream))
         .map_err(Error::internal)
 }
-pub(crate) async fn image(state: &AppState, item: &str) -> Result<Option<Response>> {
+/// Which image a caller asked for. Remote Jellyfin servers keep portrait
+/// posters under `Primary` and 16:9 artwork under `Backdrop`, so the server has
+/// to fetch the matching endpoint instead of always reusing the primary image.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Artwork {
+    Primary,
+    Backdrop,
+}
+
+impl Artwork {
+    fn remote_type(self) -> &'static str {
+        match self {
+            Self::Primary => "Primary",
+            Self::Backdrop => "Backdrop",
+        }
+    }
+    /// Keeps the two cached images apart. Primary keeps the historical name so
+    /// existing `{item}.hq.jpg` thumbnails stay valid.
+    fn cache_suffix(self) -> &'static str {
+        match self {
+            Self::Primary => "",
+            Self::Backdrop => "-backdrop",
+        }
+    }
+}
+
+/// Landscape artwork for an item. Remote Jellyfin servers only store 16:9 art
+/// for some kinds, so this asks for the best landscape image available: the
+/// item's own backdrop, an episode's own primary image (episode stills are
+/// stored at 16:9), and the nearest ancestor's backdrop — a season shows its
+/// series art, matching Jellyfin's parent-artwork behavior. Primary images are
+/// never used for movies and series: they are portrait posters, so the caller
+/// falls through to TMDb landscape art instead of serving cropped portraits.
+/// `None` means no landscape artwork was found, so the caller can try its own
+/// sidecar or TMDb art.
+pub(crate) async fn backdrop(state: &AppState, item: &str) -> Result<Option<Response>> {
+    let lineage = item_lineage(state, item).await?;
+    let episode = lineage.as_ref().is_some_and(|(kind, _)| kind == "Episode");
+    let mut candidates = vec![(item.to_owned(), Artwork::Backdrop)];
+    if episode {
+        // The still is more specific than the series backdrop for an episode.
+        candidates.push((item.to_owned(), Artwork::Primary));
+    }
+    let mut ancestor = lineage.and_then(|(_, parent)| parent);
+    for _ in 0..2 {
+        let Some(current) = ancestor else { break };
+        candidates.push((current.clone(), Artwork::Backdrop));
+        ancestor = item_lineage(state, &current)
+            .await?
+            .and_then(|(_, parent)| parent);
+    }
+    for (candidate, artwork) in candidates {
+        match image(state, &candidate, artwork).await {
+            Ok(Some(response)) => return Ok(Some(response)),
+            Ok(None) => continue,
+            Err(error) if error.0 == StatusCode::NOT_FOUND => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(None)
+}
+
+/// Local `kind` and `parent_id`, used to pick landscape artwork fallbacks.
+async fn item_lineage(state: &AppState, item: &str) -> Result<Option<(String, Option<String>)>> {
+    let item = item.to_owned();
+    state
+        .db
+        .call(move |c| {
+            Ok(c.query_row("SELECT kind,parent_id FROM items WHERE id=?1", [item], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })
+            .optional()?)
+        })
+        .await
+}
+
+/// Proxy one artwork kind for a remote item, using the on-disk cache.
+/// `None` means the item is not remote, so the caller serves its own artwork.
+pub(crate) async fn image(
+    state: &AppState,
+    item: &str,
+    artwork: Artwork,
+) -> Result<Option<Response>> {
     let Some((server, remote)) = for_item(state, item).await? else {
         return Ok(None);
     };
     let directory = state.data_dir.join("remote-artwork");
     // Version the file name so existing 480px/quality-85 thumbnails are not reused.
-    let cached = directory.join(format!("{item}.hq.jpg"));
+    let cached = directory.join(format!("{item}.hq{}.jpg", artwork.cache_suffix()));
     if let Ok(metadata) = tokio::fs::metadata(&cached).await
         && metadata.is_file()
         && metadata
@@ -694,7 +776,7 @@ pub(crate) async fn image(state: &AppState, item: &str) -> Result<Option<Respons
             .map(Some)
             .map_err(Error::internal);
     }
-    let mut url = endpoint(&server, &format!("Items/{remote}/Images/Primary"))?;
+    let mut url = endpoint(&server, &format!("Items/{remote}/Images/{}", artwork.remote_type()))?;
     url.query_pairs_mut()
         .append_pair("MaxWidth", "1200")
         .append_pair("Quality", "95")

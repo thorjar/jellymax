@@ -65,4 +65,10 @@ CREATE INDEX IF NOT EXISTS user_data_item ON user_data(item_id);
 CREATE INDEX IF NOT EXISTS playlist_items_item ON playlist_items(item_id);
 CREATE INDEX IF NOT EXISTS playback_tickets_item ON playback_tickets(item_id);
 CREATE INDEX IF NOT EXISTS sessions_user_expiry ON sessions(user_id,expires_at);
-PRAGMA user_version = 7;
+CREATE TABLE IF NOT EXISTS pairings(
+    code TEXT PRIMARY KEY, device_name TEXT NOT NULL DEFAULT '',
+    user_id TEXT REFERENCES users(id) ON DELETE CASCADE, approved_at INTEGER,
+    created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pairings_expiry ON pairings(expires_at);
+PRAGMA user_version = 8;

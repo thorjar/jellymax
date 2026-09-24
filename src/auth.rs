@@ -25,7 +25,7 @@ pub fn now() -> i64 {
 pub fn id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
-fn digest(token: &str) -> String {
+pub(crate) fn digest(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
 

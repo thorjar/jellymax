@@ -36,7 +36,7 @@ pub async fn image(
     Path(item): Path<String>,
     request: Request,
 ) -> Result<Response> {
-    if let Some(response) = crate::remote::image(&state, &item).await? {
+    if let Some(response) = crate::remote::image(&state, &item, crate::remote::Artwork::Primary).await? {
         return Ok(response);
     }
     // Confirm existence before constructing a server-owned artwork path.
@@ -92,6 +92,69 @@ pub async fn image(
                     .map_err(Error::internal)?
                     .map(Body::new));
             }
+        }
+    }
+    Err(Error::missing())
+}
+
+/// Landscape artwork for rails. Serves a cached `{item}-backdrop.{ext}`
+/// sidecar, falling back to fetching the TMDb backdrop for items that carry a
+/// TMDb id. Remote items proxy the remote server's own backdrop, borrowing the
+/// nearest ancestor's backdrop for kinds that have none.
+pub async fn backdrop_image(
+    _auth: Auth,
+    State(state): State<AppState>,
+    Path(item): Path<String>,
+    request: Request,
+) -> Result<Response> {
+    if let Some(response) = crate::remote::backdrop(&state, &item).await? {
+        return Ok(response);
+    }
+    let artwork = state.data_dir.clone().join("artwork");
+    for extension in ["jpg", "png", "webp"] {
+        if let Some(path) = safe_sidecar(
+            &artwork,
+            &artwork.join(format!("{item}-backdrop.{extension}")),
+        )
+        .await
+        {
+            return Ok(ServeFile::new(path)
+                .oneshot(request)
+                .await
+                .map_err(Error::internal)?
+                .map(Body::new));
+        }
+    }
+    let (kind, tmdb_id) = state
+        .db
+        .call({
+            let id = item.clone();
+            move |c| {
+                use rusqlite::OptionalExtension;
+                c.query_row("SELECT kind, tmdb_id FROM items WHERE id=?1", [id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                })
+                .optional()?
+                .ok_or_else(Error::missing)
+            }
+        })
+        .await?;
+    if let Some(tmdb_id) = tmdb_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        let details = if kind == "Series" {
+            format!("tv/{tmdb_id}")
+        } else {
+            format!("movie/{tmdb_id}")
+        };
+        let destination = artwork.join(format!("{item}-backdrop.jpg"));
+        if let Some(backdrop) = crate::tmdb::backdrop_path(&state, &details).await
+            && crate::tmdb::download_backdrop(&state, &backdrop, &destination).await
+            && let Some(path) = safe_sidecar(&artwork, &destination).await
+        {
+            return Ok(ServeFile::new(path)
+                .oneshot(request)
+                .await
+                .map_err(Error::internal)?
+                .map(Body::new));
         }
     }
     Err(Error::missing())

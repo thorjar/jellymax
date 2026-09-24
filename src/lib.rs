@@ -5,6 +5,7 @@ pub mod db;
 pub mod error;
 pub mod instance;
 pub mod object_storage;
+pub mod pairing;
 pub mod playback;
 pub mod playlists;
 pub mod remote;
@@ -118,6 +119,9 @@ pub fn router(state: AppState) -> Router {
         .route("/System/Setup", post(auth::setup))
         .route("/Users/AuthenticateByName", post(auth::login))
         .route("/Users/Me", get(auth::me))
+        .route("/QuickConnect/Initiate", post(pairing::initiate))
+        .route("/QuickConnect/Connect", get(pairing::connect))
+        .route("/QuickConnect/Approve", post(pairing::approve))
         .route("/Users", get(auth::users))
         .route("/Users/", get(auth::users))
         .route("/Users/New", post(auth::create_user))
@@ -175,6 +179,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Videos/{id}/hls/{segment}", get(playback::hls_segment))
         .route("/Items/{id}/Download", get(playback::stream))
         .route("/Items/{id}/Images/Primary", get(assets::image))
+        .route("/Items/{id}/Images/Backdrop", get(assets::backdrop_image))
         .route("/Items/{id}/Subtitles", get(assets::subtitles))
         .route("/Items/{id}/Subtitles/{index}", get(assets::subtitle))
         .route("/Items/{id}/SubtitleSearch", get(subtitle_provider::search))

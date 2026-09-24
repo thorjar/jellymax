@@ -22,6 +22,18 @@ const DEFAULT_CACHE_LIMIT_MB: u64 = 512;
 const MIB: u64 = 1024 * 1024;
 static READRATE_BURST_SUPPORT: OnceLock<StdMutex<HashMap<String, bool>>> = OnceLock::new();
 
+pub(crate) fn fragmented_mp4(mode: &str, video_codec: &str) -> bool {
+    mode != "video" && video_codec.eq_ignore_ascii_case("hevc")
+}
+
+pub(crate) fn segment_extension(mode: &str, video_codec: &str) -> &'static str {
+    if fragmented_mp4(mode, video_codec) {
+        "m4s"
+    } else {
+        "ts"
+    }
+}
+
 fn supports_initial_burst(ffmpeg: &str) -> bool {
     if Path::new(ffmpeg).file_name() != Some(std::ffi::OsStr::new("ffmpeg")) {
         return false;
@@ -165,17 +177,19 @@ impl TranscodeSessions {
             return Err(Error::forbidden());
         }
         current.last_access = Instant::now();
+        let extension = segment_extension(mode, video_codec);
         let target = if init_only {
             current.directory.join("init.mp4")
         } else {
-            current.directory.join(format!("{index}.m4s"))
+            current.directory.join(format!("{index}.{extension}"))
         };
-        if output_ready(&target, &current.directory, index, init_only).await {
+        if output_ready(&target, &current.directory, index, init_only, extension).await {
             reap_finished(&mut current)?;
             if !init_only {
                 prune_segments(
                     &current.directory,
                     index.saturating_sub(RETAIN_BEHIND_SEGMENTS),
+                    extension,
                 )
                 .await?;
             }
@@ -185,7 +199,7 @@ impl TranscodeSessions {
             Some(child) => child.try_wait().map_err(Error::internal)?.is_none(),
             None => false,
         };
-        let (oldest, latest) = segment_bounds(&current.directory).await;
+        let (oldest, latest) = segment_bounds(&current.directory, extension).await;
         let restart = !running
             || index < current.first_segment
             || oldest.is_some_and(|oldest| index < oldest)
@@ -251,7 +265,7 @@ impl TranscodeSessions {
                 return Err(cache_full());
             }
             let directory = session.lock().await.directory.clone();
-            if output_ready(&target, &directory, index, init_only).await {
+            if output_ready(&target, &directory, index, init_only, extension).await {
                 let mut current = session.lock().await;
                 if current.generation != generation {
                     return Err(Error(
@@ -265,6 +279,7 @@ impl TranscodeSessions {
                     prune_segments(
                         &current.directory,
                         index.saturating_sub(RETAIN_BEHIND_SEGMENTS),
+                        extension,
                     )
                     .await?;
                 }
@@ -291,7 +306,7 @@ impl TranscodeSessions {
                 let log = tokio::fs::read_to_string(current.directory.join("ffmpeg.log"))
                     .await
                     .unwrap_or_default();
-                let (oldest, latest) = segment_bounds(&current.directory).await;
+                let (oldest, latest) = segment_bounds(&current.directory, extension).await;
                 tracing::warn!(item=%current.item, mode=%current.mode, index, init_only, ?exit_status, ?oldest, ?latest, stderr=%log, "Managed FFmpeg session did not produce requested HLS output");
                 current.child.take();
                 current.permit.take();
@@ -311,7 +326,7 @@ impl TranscodeSessions {
         let log = tokio::fs::read_to_string(current.directory.join("ffmpeg.log"))
             .await
             .unwrap_or_default();
-        let (oldest, latest) = segment_bounds(&current.directory).await;
+        let (oldest, latest) = segment_bounds(&current.directory, extension).await;
         tracing::warn!(item=%current.item, mode=%current.mode, index, init_only, ?oldest, ?latest, stderr=%log, "Timed out waiting for FFmpeg output");
         stop(&mut current).await;
         Err(Error(
@@ -326,6 +341,9 @@ impl TranscodeSessions {
         requested_start: u64,
     ) -> Result<PathBuf> {
         validate_session_id(request.session_id)?;
+        if !fragmented_mp4(request.mode, request.video_codec) {
+            return Err(Error::bad("This HLS stream does not use an init segment"));
+        }
         let session_id = request.session_id.to_owned();
         let path = self.root.join(&session_id).join("init.mp4");
         if let Some(session) = self.sessions.lock().await.get(&session_id).cloned() {
@@ -433,7 +451,9 @@ fn start_ffmpeg(
     if matches!(mode, "remux" | "audio") && video_codec == "hevc" {
         command.args(["-tag:v", "hvc1"]);
     }
-    let segment_pattern = directory.join("%d.m4s");
+    let use_fmp4 = fragmented_mp4(mode, video_codec);
+    let extension = segment_extension(mode, video_codec);
+    let segment_pattern = directory.join(format!("%d.{extension}"));
     let playlist = directory.join("main.m3u8");
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -453,9 +473,7 @@ fn start_ffmpeg(
             "-hls_time",
             &SEGMENT_SECONDS.to_string(),
             "-hls_segment_type",
-            "fmp4",
-            "-hls_fmp4_init_filename",
-            "init.mp4",
+            if use_fmp4 { "fmp4" } else { "mpegts" },
             "-start_number",
             &index.to_string(),
             "-hls_list_size",
@@ -481,14 +499,14 @@ fn start_ffmpeg(
     })
 }
 
-async fn complete_segment(path: &Path, directory: &Path, index: u64) -> bool {
+async fn complete_segment(path: &Path, directory: &Path, index: u64, extension: &str) -> bool {
     let has_bytes = tokio::fs::metadata(path)
         .await
         .is_ok_and(|metadata| metadata.len() > 0);
     if !has_bytes {
         return false;
     }
-    if tokio::fs::metadata(directory.join(format!("{}.m4s", index + 1)))
+    if tokio::fs::metadata(directory.join(format!("{}.{extension}", index + 1)))
         .await
         .is_ok()
     {
@@ -502,7 +520,7 @@ async fn complete_segment(path: &Path, directory: &Path, index: u64) -> bool {
         .is_ok_and(|playlist| {
             playlist
                 .lines()
-                .any(|line| line.trim() == format!("{index}.m4s"))
+                .any(|line| line.trim() == format!("{index}.{extension}"))
         })
 }
 
@@ -538,17 +556,23 @@ fn complete_mp4_init(bytes: &[u8]) -> bool {
     has_moov && offset == bytes.len()
 }
 
-async fn output_ready(path: &Path, directory: &Path, index: u64, init_only: bool) -> bool {
+async fn output_ready(
+    path: &Path,
+    directory: &Path,
+    index: u64,
+    init_only: bool,
+    extension: &str,
+) -> bool {
     if init_only {
         tokio::fs::read(path)
             .await
             .is_ok_and(|bytes| complete_mp4_init(&bytes))
     } else {
-        complete_segment(path, directory, index).await
+        complete_segment(path, directory, index, extension).await
     }
 }
 
-async fn segment_bounds(directory: &Path) -> (Option<u64>, Option<u64>) {
+async fn segment_bounds(directory: &Path, extension: &str) -> (Option<u64>, Option<u64>) {
     let Ok(mut entries) = tokio::fs::read_dir(directory).await else {
         return (None, None);
     };
@@ -557,7 +581,7 @@ async fn segment_bounds(directory: &Path) -> (Option<u64>, Option<u64>) {
         if let Some(index) = entry
             .file_name()
             .to_str()
-            .and_then(|name| name.strip_suffix(".m4s"))
+            .and_then(|name| name.strip_suffix(&format!(".{extension}")))
             .and_then(|value| value.parse::<u64>().ok())
         {
             latest = Some(latest.map_or(index, |old: u64| old.max(index)));
@@ -567,7 +591,7 @@ async fn segment_bounds(directory: &Path) -> (Option<u64>, Option<u64>) {
     (oldest, latest)
 }
 
-async fn prune_segments(directory: &Path, before: u64) -> Result<()> {
+async fn prune_segments(directory: &Path, before: u64, extension: &str) -> Result<()> {
     if before == 0 {
         return Ok(());
     }
@@ -578,7 +602,7 @@ async fn prune_segments(directory: &Path, before: u64) -> Result<()> {
         if let Some(index) = entry
             .file_name()
             .to_str()
-            .and_then(|name| name.strip_suffix(".m4s"))
+            .and_then(|name| name.strip_suffix(&format!(".{extension}")))
             .and_then(|name| name.parse::<u64>().ok())
             && index < before
         {
@@ -697,14 +721,14 @@ mod tests {
         tokio::fs::write(temp.path().join("main.m3u8"), b"#EXTM3U\n3.m4s\n")
             .await
             .unwrap();
-        assert!(!complete_segment(&segment, temp.path(), 4).await);
+        assert!(!complete_segment(&segment, temp.path(), 4, "m4s").await);
         tokio::fs::write(
             temp.path().join("main.m3u8"),
             b"#EXTM3U\n#EXTINF:6,\n4.m4s\n",
         )
         .await
         .unwrap();
-        assert!(complete_segment(&segment, temp.path(), 4).await);
+        assert!(complete_segment(&segment, temp.path(), 4, "m4s").await);
     }
 
     #[cfg(unix)]
@@ -742,8 +766,10 @@ printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last"
             gate: gate.clone(),
             session_id: "seek",
             item: "movie",
-            mode: "video",
-            video_codec: "h264",
+            // HEVC remux output is packaged as fragmented MP4, which is the
+            // only HLS flavour with an init segment.
+            mode: "remux",
+            video_codec: "hevc",
             audio_stream_index: None,
             source: OsString::from("ignored"),
             source_headers: None,
@@ -813,14 +839,16 @@ printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last"
             0,
         )
         .unwrap();
+        // Non-HEVC remux output is MPEG-TS, which carries its own codec
+        // headers, so the first segment is where the selected track shows up.
         for _ in 0..160 {
-            if output.join("0.m4s").exists() {
+            if output.join("0.ts").exists() {
                 break;
             }
             sleep(Duration::from_millis(50)).await;
         }
         assert!(
-            output.join("0.m4s").exists(),
+            output.join("0.ts").exists(),
             "selected soundtrack did not produce HLS output: {}",
             std::fs::read_to_string(output.join("ffmpeg.log")).unwrap_or_default()
         );
@@ -837,7 +865,7 @@ printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last"
                 "-of",
                 "csv=p=0",
             ])
-            .arg(output.join("init.mp4"))
+            .arg(output.join("0.ts"))
             .output()
             .unwrap();
         assert!(probe.status.success());
@@ -846,14 +874,22 @@ printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last"
             streams
                 .lines()
                 .any(|line| line.contains("audio") && line.contains('2')),
-            "wrong audio stream in HLS init: {streams}"
+            "wrong audio stream in HLS output: {streams}"
         );
+        // MPEG-TS carries a program table, so ffprobe reports every stream
+        // twice: once under the program and once at the file level. Collapse
+        // the duplicates before asserting that only the selected track is
+        // muxed.
+        let mut audio_streams: Vec<&str> = streams
+            .lines()
+            .filter(|line| line.contains("audio"))
+            .collect();
+        audio_streams.sort_unstable();
+        audio_streams.dedup();
         assert_eq!(
-            streams
-                .lines()
-                .filter(|line| line.contains("audio"))
-                .count(),
-            1
+            audio_streams.len(),
+            1,
+            "unexpected audio streams in HLS output: {streams}"
         );
     }
 
@@ -894,13 +930,13 @@ printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last"
         )
         .unwrap();
         for _ in 0..100 {
-            if output.join("1.m4s").exists() {
+            if output.join("1.ts").exists() {
                 break;
             }
             sleep(Duration::from_millis(50)).await;
         }
         assert!(
-            output.join("1.m4s").exists(),
+            output.join("1.ts").exists(),
             "first segments were not available quickly"
         );
         assert!(
@@ -910,12 +946,12 @@ printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last"
         child.kill().await.unwrap();
         let _ = child.wait().await;
         for index in 0..15 {
-            std::fs::write(output.join(format!("{index}.m4s")), b"segment").unwrap();
+            std::fs::write(output.join(format!("{index}.ts")), b"segment").unwrap();
         }
-        prune_segments(&output, 5).await.unwrap();
-        assert!(!output.join("4.m4s").exists());
-        assert!(output.join("5.m4s").exists());
-        let stale = temp.path().join("transcodes/old.m4s");
+        prune_segments(&output, 5, "ts").await.unwrap();
+        assert!(!output.join("4.ts").exists());
+        assert!(output.join("5.ts").exists());
+        let stale = temp.path().join("transcodes/old.ts");
         std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
         std::fs::write(&stale, b"stale").unwrap();
         let _cache = TranscodeSessions::new(temp.path());
@@ -930,8 +966,9 @@ printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last"
                     gate: Arc::new(Semaphore::new(1)),
                     session_id: "session",
                     item: "movie",
-                    mode: "video",
-                    video_codec: "h264",
+                    // Fragmented MP4 flavours are the only ones with an init segment.
+                    mode: "remux",
+                    video_codec: "hevc",
                     audio_stream_index: None,
                     source,
                     source_headers: None,
@@ -949,8 +986,8 @@ printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last"
                     gate: Arc::new(Semaphore::new(1)),
                     session_id: "session",
                     item: "movie",
-                    mode: "video",
-                    video_codec: "h264",
+                    mode: "remux",
+                    video_codec: "hevc",
                     audio_stream_index: None,
                     source: temp.path().join("source.mp4").into_os_string(),
                     source_headers: None,
