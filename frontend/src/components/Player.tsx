@@ -51,6 +51,8 @@ export function Player({ item }: PlayerProps) {
   const controlsTimer = useRef<number | undefined>(undefined);
   const positionRef = useRef(0);
   const switchPositionRef = useRef<number | null>(null);
+  const initialPositionAppliedRef = useRef(false);
+  const pausedPositionRef = useRef<number | null>(null);
   const lastReportedRef = useRef(0);
   const stoppedRef = useRef(true);
   const playSessionRef = useRef<string | undefined>(undefined);
@@ -79,6 +81,10 @@ export function Player({ item }: PlayerProps) {
     setSelectedAudio(null);
     setAudioMenuOpen(false);
     switchPositionRef.current = null;
+    initialPositionAppliedRef.current = false;
+    pausedPositionRef.current = null;
+    setCurrentTime(ticksToSeconds(item.UserData?.Played ? 0 : item.UserData?.PlaybackPositionTicks));
+    setDuration(0);
     setSubtitleSearchOpen(false);
     setSubtitleResults([]);
     setSubtitleUrl(null);
@@ -348,6 +354,8 @@ export function Player({ item }: PlayerProps) {
         const name = reason && typeof reason === "object" && "name" in reason ? String(reason.name) : "";
         if (name === "AbortError") return;
         if (name === "NotSupportedError" && playbackUrl === source?.DirectStreamUrl && source.FallbackTranscodingUrl) {
+          switchPositionRef.current = media.currentTime;
+          initialPositionAppliedRef.current = false;
           setPlaybackUrl(source.FallbackTranscodingUrl);
           return;
         }
@@ -374,6 +382,7 @@ export function Player({ item }: PlayerProps) {
     if (!url) { setPlaybackNotice("This soundtrack is unavailable."); return; }
     const position = mediaRef.current?.currentTime ?? currentTime;
     switchPositionRef.current = position;
+    initialPositionAppliedRef.current = false;
     const address = new URL(url, window.location.href);
     address.searchParams.set("PlaySessionId", crypto.randomUUID().replace(/-/g, ""));
     address.searchParams.set("StartIndex", String(Math.floor(position / 6)));
@@ -468,33 +477,65 @@ export function Player({ item }: PlayerProps) {
     && document.createElement("video").canPlayType("application/vnd.apple.mpegurl") !== "";
   const savedPosition = ticksToSeconds(item.UserData?.Played ? 0 : item.UserData?.PlaybackPositionTicks);
   const initialUrl = resolveUrl(playbackUrl);
-  const startPosition = switchPositionRef.current ?? savedPosition;
-  const nativeSrc = !isHls || nativeHls
-    ? `${initialUrl}${startPosition > 0 ? `#t=${startPosition}` : ""}`
-    : undefined;
+  const nativeSrc = !isHls || nativeHls ? initialUrl : undefined;
   const audioConversion = playbackUrl === source.AudioTranscodingUrl;
   const supportsPiP = document.pictureInPictureEnabled || "webkitSetPresentationMode" in HTMLVideoElement.prototype;
   const updatePosition = () => {
     const media = mediaRef.current;
     if (!media) return;
     positionRef.current = Math.floor(media.currentTime * TICKS_PER_SECOND);
+    if (media.paused) pausedPositionRef.current = media.currentTime;
     setCurrentTime(media.currentTime);
     if (item.IsRemote && typeof selectedSubtitle === "number" && source.MediaStreams.find((stream) => stream.Index === selectedSubtitle)?.IsExternal !== true)
       setSubtitleWindowStart(Math.floor(media.currentTime / 45) * 45);
   };
   const commonProps = {
     src: nativeSrc, controls: isAudio, autoPlay: true, preload: "auto" as const,
-    onPlay: () => { setPlaying(true); setPlaybackNotice(null); },
-    onPause: () => { setPlaying(false); setControlsVisible(true); window.clearTimeout(controlsTimer.current); },
+    onPlay: () => {
+      const media = mediaRef.current;
+      const pausedAt = pausedPositionRef.current;
+      pausedPositionRef.current = null;
+      if (media && pausedAt !== null && Math.abs(media.currentTime - pausedAt) > 0.5 && Number.isFinite(media.duration)) {
+        media.currentTime = Math.max(0, Math.min(pausedAt, media.duration - 1));
+      }
+      updatePosition();
+      setPlaying(true);
+      setPlaybackNotice(null);
+    },
+    onPause: () => {
+      updatePosition();
+      pausedPositionRef.current = mediaRef.current?.currentTime ?? currentTime;
+      setPlaying(false);
+      setControlsVisible(true);
+      window.clearTimeout(controlsTimer.current);
+    },
     onVolumeChange: () => { const media = mediaRef.current; if (media) { setVolume(media.volume); setMuted(media.muted); } },
     onTimeUpdate: updatePosition,
     onSeeking: updatePosition,
     onSeeked: updatePosition,
     onLoadedMetadata: () => {
-      const media = mediaRef.current; if (!media) return; setDuration(media.duration);
+      const media = mediaRef.current;
+      if (!media) return;
+      setDuration(media.duration);
+      if (initialPositionAppliedRef.current) {
+        const pausedAt = pausedPositionRef.current;
+        if (pausedAt !== null && Math.abs(media.currentTime - pausedAt) > 0.5 && Number.isFinite(media.duration)) {
+          media.currentTime = Math.max(0, Math.min(pausedAt, media.duration - 1));
+        }
+        updatePosition();
+        return;
+      }
+      initialPositionAppliedRef.current = true;
       const saved = switchPositionRef.current ?? savedPosition;
-      if (saved > 0 && (switchPositionRef.current !== null || !item.UserData?.Played) && media.currentTime === 0 && Number.isFinite(media.duration))
+      switchPositionRef.current = null;
+      if (saved > 0 && Number.isFinite(media.duration)) {
         media.currentTime = Math.max(0, Math.min(saved, media.duration - 1));
+      }
+      updatePosition();
+    },
+    onDurationChange: () => {
+      const media = mediaRef.current;
+      if (media && Number.isFinite(media.duration)) setDuration(media.duration);
     },
     onEnded: () => {
       setPlaying(false);
@@ -503,6 +544,8 @@ export function Player({ item }: PlayerProps) {
     },
     onError: () => {
       if (playbackUrl === source.DirectStreamUrl && source.FallbackTranscodingUrl) {
+        switchPositionRef.current = mediaRef.current?.currentTime ?? currentTime;
+        initialPositionAppliedRef.current = false;
         setError(null); setPlaybackUrl(source.FallbackTranscodingUrl);
         setPlaybackNotice(null);
       } else {
@@ -548,9 +591,9 @@ export function Player({ item }: PlayerProps) {
             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-sm sm:gap-3">
               <button type="button" onClick={togglePlayback} aria-label={playing ? "Pause" : "Play"}
                 className="rounded-full p-2 hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name={playing ? "pause" : "play"} /></button>
-              <button type="button" onClick={() => seek(currentTime - 10)} aria-label="Back 10 seconds"
+              <button type="button" onClick={() => seek((mediaRef.current?.currentTime ?? currentTime) - 10)} aria-label="Back 10 seconds"
                 className="rounded-full p-2 hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name="back10" className="h-6 w-6" /></button>
-              <button type="button" onClick={() => seek(currentTime + 10)} aria-label="Forward 10 seconds"
+              <button type="button" onClick={() => seek((mediaRef.current?.currentTime ?? currentTime) + 10)} aria-label="Forward 10 seconds"
                 className="rounded-full p-2 hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name="forward10" className="h-6 w-6" /></button>
               <span className="min-w-24 tabular-nums text-xs text-white/85">{formatSeconds(currentTime)} / {formatSeconds(duration)}</span>
               <div className="ml-auto flex items-center gap-1.5 sm:gap-3">
