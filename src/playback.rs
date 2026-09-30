@@ -791,6 +791,33 @@ pub async fn stream(
         .map_err(Error::internal)?;
     Ok(response.map(Body::new).into_response())
 }
+const TICKS_PER_SECOND: i64 = 10_000_000;
+const MIN_RESUME_PERCENT: i64 = 5;
+const MAX_RESUME_PERCENT: i64 = 90;
+const MIN_RESUME_DURATION_SECONDS: i64 = 300;
+
+fn normalized_play_state(runtime_ticks: Option<i64>, reported_ticks: i64) -> (i64, bool) {
+    let Some(runtime) = runtime_ticks.filter(|runtime| *runtime > 0) else {
+        return (reported_ticks, false);
+    };
+    let position = reported_ticks.min(runtime);
+    if position == 0 {
+        return (0, false);
+    }
+    let position_scaled = i128::from(position) * 100;
+    let runtime_scaled = i128::from(runtime);
+    if position_scaled < runtime_scaled * i128::from(MIN_RESUME_PERCENT) {
+        return (0, false);
+    }
+    if position_scaled > runtime_scaled * i128::from(MAX_RESUME_PERCENT)
+        || position >= runtime.saturating_sub(TICKS_PER_SECOND)
+        || runtime < MIN_RESUME_DURATION_SECONDS * TICKS_PER_SECOND
+    {
+        return (0, true);
+    }
+    (position, false)
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Progress {
@@ -808,10 +835,13 @@ pub async fn progress(
     }
     state.db.call(move |c| {
         let runtime:Option<i64>=c.query_row("SELECT runtime_ticks FROM items WHERE id=?1",[&input.item_id],|r|r.get(0)).optional()?.ok_or_else(Error::missing)?;
-        let position=runtime.map_or(input.position_ticks,|r|input.position_ticks.min(r));
-        c.execute("INSERT INTO user_data(user_id,item_id,position_ticks,updated_at) VALUES (?1,?2,?3,?4)
-            ON CONFLICT(user_id,item_id) DO UPDATE SET position_ticks=excluded.position_ticks,updated_at=excluded.updated_at",
-            params![auth.user.id,input.item_id,position,now()])?;
+        let (position, completed) = normalized_play_state(runtime, input.position_ticks);
+        c.execute("INSERT INTO user_data(user_id,item_id,position_ticks,played,updated_at) VALUES (?1,?2,?3,?4,?5)
+            ON CONFLICT(user_id,item_id) DO UPDATE SET
+                position_ticks=excluded.position_ticks,
+                played=CASE WHEN excluded.played=1 THEN 1 ELSE user_data.played END,
+                updated_at=excluded.updated_at",
+            params![auth.user.id,input.item_id,position,completed,now()])?;
         Ok(())
     }).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -886,7 +916,7 @@ pub async fn unplayed(
 
 #[cfg(test)]
 mod tests {
-    use super::PlaybackPlan;
+    use super::{PlaybackPlan, TICKS_PER_SECOND, normalized_play_state};
     use serde_json::json;
 
     fn streams(video: &str, audio: &str) -> Vec<serde_json::Value> {
@@ -894,6 +924,36 @@ mod tests {
             json!({"Type":"Video","Codec":video}),
             json!({"Type":"Audio","Codec":audio}),
         ]
+    }
+
+    #[test]
+    fn jellyfin_resume_thresholds_ignore_opening_and_complete_near_end() {
+        let runtime = 1_000 * TICKS_PER_SECOND;
+        assert_eq!(
+            normalized_play_state(Some(runtime), 49 * TICKS_PER_SECOND),
+            (0, false)
+        );
+        assert_eq!(
+            normalized_play_state(Some(runtime), 50 * TICKS_PER_SECOND),
+            (50 * TICKS_PER_SECOND, false)
+        );
+        assert_eq!(
+            normalized_play_state(Some(runtime), 900 * TICKS_PER_SECOND),
+            (900 * TICKS_PER_SECOND, false)
+        );
+        assert_eq!(
+            normalized_play_state(Some(runtime), 901 * TICKS_PER_SECOND),
+            (0, true)
+        );
+        assert_eq!(
+            normalized_play_state(Some(runtime), runtime - TICKS_PER_SECOND),
+            (0, true)
+        );
+        assert_eq!(
+            normalized_play_state(Some(200 * TICKS_PER_SECOND), 10 * TICKS_PER_SECOND),
+            (0, true)
+        );
+        assert_eq!(normalized_play_state(None, 42), (42, false));
     }
 
     #[test]

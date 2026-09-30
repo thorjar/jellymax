@@ -869,6 +869,53 @@ async fn user_data_is_private_and_survives_rescanning() {
 }
 
 #[tokio::test]
+async fn near_end_progress_marks_played_and_removes_continue_watching() {
+    let s = TestServer::new().await;
+    let item = s.item().await;
+    let item_id = item.clone();
+    s.state
+        .db
+        .call(move |connection| {
+            connection.execute(
+                "UPDATE items SET runtime_ticks=?2 WHERE id=?1",
+                rusqlite::params![item_id, 10_000_i64 * 10_000_000],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    s.call(
+        "POST",
+        "/Sessions/Playing/Progress",
+        Some(json!({"ItemId":item,"PositionTicks":5_000_i64 * 10_000_000})),
+    )
+    .await;
+    assert_eq!(
+        s.call("GET", &format!("/Users/{}/Items/Resume", s.user), None)
+            .await
+            .1["TotalRecordCount"],
+        1
+    );
+
+    s.call(
+        "POST",
+        "/Sessions/Playing/Progress",
+        Some(json!({"ItemId":item,"PositionTicks":9_100_i64 * 10_000_000})),
+    )
+    .await;
+    let data = s.call("GET", &format!("/Items/{item}"), None).await.1;
+    assert_eq!(data["UserData"]["Played"], true);
+    assert_eq!(data["UserData"]["PlaybackPositionTicks"], 0);
+    assert_eq!(
+        s.call("GET", &format!("/Users/{}/Items/Resume", s.user), None)
+            .await
+            .1["TotalRecordCount"],
+        0
+    );
+}
+
+#[tokio::test]
 async fn marking_unplayed_resets_the_resume_position() {
     let s = TestServer::new().await;
     let item = s.item().await;
@@ -1291,7 +1338,11 @@ async fn progress_is_clamped_to_known_duration() {
     );
     assert_eq!(
         s.call("GET", &format!("/Items/{item}"), None).await.1["UserData"]["PlaybackPositionTicks"],
-        100
+        0
+    );
+    assert_eq!(
+        s.call("GET", &format!("/Items/{item}"), None).await.1["UserData"]["Played"],
+        true
     );
 }
 

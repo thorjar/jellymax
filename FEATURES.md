@@ -16,7 +16,7 @@ The objective is approximately 90% of the useful non-live-TV behavior, not 90% o
 | Direct playback | Original local and remote Jellyfin media with HTTP ranges and HEAD; short-lived browser playback tickets | Remote-server transcode negotiation, detailed device profiles, playback sessions and remote control |
 | FFmpeg integration | Metadata probing, direct-play capability selection, persistent per-playback FFmpeg sessions, muxed fMP4 HLS, segment reuse and seek restarts, inactive-session cleanup, E-AC-3/AC-3/DTS/TrueHD to AAC, H.264/AAC fallback transcoding | Hardware acceleration, selectable streams, quality profiles and persistent job reporting |
 | Subtitles | Local sidecars, embedded text extraction, remote external SRT/VTT delivery, WebVTT conversion, browser track selection, SRT/VTT import, optional OpenSubtitles search/download | Image-based subtitles, burn-in, provider support without an OpenSubtitles API key |
-| Watch state | Per-user position, resume, favorites, explicit played state | Auto-completion policy, play counts, richer history and progress events |
+| Watch state | Per-user position, resume, favorites, explicit played state, Jellyfin-style automatic completion | Play counts, configurable completion thresholds, richer history and progress events |
 | Playlists | Private ordered lists, transactional create/append/delete | Rename, reorder, remove individual entries, sharing and smart playlists |
 | Collections | Not implemented | Movie collections and user collection management |
 | Sessions and devices | Authentication sessions only | WebSockets, playback reporting, casting, remote commands, sync play |
