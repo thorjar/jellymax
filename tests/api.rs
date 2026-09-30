@@ -126,6 +126,26 @@ async fn object_store_listing_never_exposes_credentials() {
 }
 
 #[tokio::test]
+async fn object_store_uploads_are_not_rejected_by_the_json_body_limit() {
+    let s = TestServer::new().await;
+    let response = s
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/ObjectStores/missing/Upload?Path=movie.mkv")
+                .header("X-Emby-Token", &s.token)
+                .header("Content-Type", "video/x-matroska")
+                .body(Body::from(vec![0_u8; 128 * 1024]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn remote_playback_uses_local_hls_and_static_upstream_input() {
     let s = TestServer::new().await;
     s.state.db.call(|c| {
