@@ -14,7 +14,7 @@ impl Database {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 8 {
+        if version > 9 {
             return Err(Error::internal(
                 "Database was created by a newer server version",
             ));
@@ -51,6 +51,27 @@ impl Database {
             }
         }
         tx.execute_batch(include_str!("schema.sql"))?;
+        if version > 0 && version < 9 {
+            // Apply Jellyfin's default resume thresholds to existing history so
+            // already-finished titles leave Continue Watching on upgrade.
+            tx.execute(
+                "UPDATE user_data AS u SET position_ticks=0,played=1,updated_at=strftime('%s','now')
+                 WHERE position_ticks>0 AND EXISTS (
+                   SELECT 1 FROM items i WHERE i.id=u.item_id AND i.runtime_ticks>0 AND (
+                     CAST(u.position_ticks AS REAL)/i.runtime_ticks>0.90 OR
+                     u.position_ticks>=i.runtime_ticks-10000000 OR
+                     (i.runtime_ticks<3000000000 AND CAST(u.position_ticks AS REAL)/i.runtime_ticks>=0.05)
+                   ))",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE user_data AS u SET position_ticks=0,updated_at=strftime('%s','now')
+                 WHERE played=0 AND position_ticks>0 AND EXISTS (
+                   SELECT 1 FROM items i WHERE i.id=u.item_id AND i.runtime_ticks>0
+                     AND CAST(u.position_ticks AS REAL)/i.runtime_ticks<0.05)",
+                [],
+            )?;
+        }
         tx.commit()?;
         connection.execute(
             "INSERT OR IGNORE INTO settings(key,value) VALUES ('server_id',?1)",

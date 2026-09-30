@@ -71,4 +71,4 @@ CREATE TABLE IF NOT EXISTS pairings(
     created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pairings_expiry ON pairings(expires_at);
-PRAGMA user_version = 8;
+PRAGMA user_version = 9;

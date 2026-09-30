@@ -1522,6 +1522,36 @@ async fn series_seasons_and_episodes_are_persistent_and_numerically_ordered() {
 }
 
 #[test]
+fn upgrading_cleans_existing_near_finished_resume_entries() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("resume.db");
+    drop(Database::open(&path).unwrap());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO users(id,name,password_hash,is_admin) VALUES ('user','user','x',0)",
+            [],
+        )
+        .unwrap();
+    connection.execute("INSERT INTO libraries(id,name,path,kind) VALUES ('library','Movies','/media','movies')", []).unwrap();
+    connection.execute("INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,scan_id) VALUES ('movie','library','/media/movie.mp4','Movie','Movie','mp4',1,1,100000000000,'scan')", []).unwrap();
+    connection.execute("INSERT INTO user_data(user_id,item_id,position_ticks,played,updated_at) VALUES ('user','movie',91000000000,0,1)", []).unwrap();
+    connection.pragma_update(None, "user_version", 8).unwrap();
+    drop(connection);
+
+    drop(Database::open(&path).unwrap());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let state: (i64, bool) = connection
+        .query_row(
+            "SELECT position_ticks,played FROM user_data WHERE user_id='user' AND item_id='movie'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, (0, true));
+}
+
+#[test]
 fn upgrades_old_databases_before_creating_new_indexes() {
     for version in [1, 2, 3] {
         let temp = TempDir::new().unwrap();
@@ -1538,7 +1568,7 @@ fn upgrades_old_databases_before_creating_new_indexes() {
         assert_eq!(
             c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            8
+            9
         );
         assert_eq!(
             c.query_row("SELECT name FROM items WHERE id='existing'", [], |r| r
