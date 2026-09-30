@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../../api/client";
 import type { ObjectStoreConnection } from "../../api/types";
 import { Spinner } from "../../components/Spinner";
@@ -19,6 +19,12 @@ export function ObjectStoresAdmin() {
   const [collectionType, setCollectionType] = useState("movies");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [uploadStoreId, setUploadStoreId] = useState<string | null>(null);
+  const [uploadFolder, setUploadFolder] = useState("");
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadLabel, setUploadLabel] = useState("");
+  const uploadInputRef = useRef<HTMLInputElement>(null);
   const load = useCallback(async () => {
     try { setStores(await api.objectStores()); }
     catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
@@ -60,6 +66,53 @@ export function ObjectStoresAdmin() {
     finally{setBusy(false);}
   }
 
+  async function upload(store: ObjectStoreConnection) {
+    if (uploadFiles.length === 0) {
+      setMessage("Choose at least one media file to upload.");
+      return;
+    }
+    const folder = uploadFolder.trim().replace(/^\/+|\/+$/g, "");
+    setBusy(true);
+    setUploadProgress(0);
+    let uploaded = 0;
+    let uploadedBytes = 0;
+    const totalBytes = uploadFiles.reduce((total, file) => total + file.size, 0);
+    try {
+      for (const [index, file] of uploadFiles.entries()) {
+        setUploadLabel(`Uploading ${file.name} (${index + 1} of ${uploadFiles.length})`);
+        const path = folder ? `${folder}/${file.name}` : file.name;
+        await api.uploadObject(store.Id, path, file, (loaded) => {
+          setUploadProgress(totalBytes ? ((uploadedBytes + loaded) / totalBytes) * 100 : 0);
+        });
+        uploaded += 1;
+        uploadedBytes += file.size;
+        setUploadProgress(totalBytes ? (uploadedBytes / totalBytes) * 100 : 100);
+      }
+      setUploadLabel("Scanning uploaded media…");
+      const result = await api.syncObjectStore(store.Id);
+      librariesChanged();
+      setUploadProgress(100);
+      setUploadFiles([]);
+      if (uploadInputRef.current) uploadInputRef.current.value = "";
+      setMessage(
+        `Uploaded ${uploaded} file${uploaded === 1 ? "" : "s"} to ${store.Name} and scanned ${result.Items} media objects.`,
+      );
+    } catch (error) {
+      if (uploaded > 0) {
+        try {
+          await api.syncObjectStore(store.Id);
+          librariesChanged();
+        } catch {
+          // Preserve the upload error; the administrator can retry Sync separately.
+        }
+      }
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+      setUploadLabel("");
+    }
+  }
+
   return <div className="card p-6">
     <h2 className="text-lg font-semibold">Connect object storage</h2>
     <p className="muted mt-1 text-sm">Read media directly from a private AWS S3 or Cloudflare R2 bucket. Credentials stay on this Jellymax server.</p>
@@ -78,6 +131,33 @@ export function ObjectStoresAdmin() {
     {message&&<p className="mt-4 rounded-lg border border-edge bg-surface-hover px-3 py-2 text-sm">{message}</p>}
     <h2 className="mt-8 text-lg font-semibold">Connected object stores</h2>
     {!stores?<div className="mt-4"><Spinner label="Loading object stores…" /></div>:stores.length===0?<p className="muted mt-4 rounded-xl border border-dashed border-edge py-10 text-center text-sm">No object storage connected.</p>:
-      <ul className="mt-4 divide-y divide-edge overflow-hidden rounded-xl border border-edge bg-surface-raised">{stores.map(store=><li key={store.Id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"><div className="min-w-0"><div className="font-medium">{store.Name}</div><div className="muted truncate text-sm">{store.Bucket}{store.Prefix?`/${store.Prefix}`:""} · {store.Region}</div></div><div className="flex gap-2"><button className="btn" disabled={busy} onClick={()=>void sync(store)}>Sync</button><button className="btn btn-danger" disabled={busy} onClick={()=>void remove(store)}>Disconnect</button></div></li>)}</ul>}
+      <ul className="mt-4 divide-y divide-edge overflow-hidden rounded-xl border border-edge bg-surface-raised">{stores.map(store=><li key={store.Id} className="px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0"><div className="font-medium">{store.Name}</div><div className="muted truncate text-sm">{store.Bucket}{store.Prefix?`/${store.Prefix}`:""} · {store.Region}</div></div>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn" disabled={busy} onClick={()=>{setUploadStoreId(uploadStoreId===store.Id?null:store.Id);setUploadFiles([]);setUploadProgress(0);}}>Upload media</button>
+            <button className="btn" disabled={busy} onClick={()=>void sync(store)}>Sync</button>
+            <button className="btn btn-danger" disabled={busy} onClick={()=>void remove(store)}>Disconnect</button>
+          </div>
+        </div>
+        {uploadStoreId===store.Id&&<div className="mt-4 grid gap-3 rounded-xl border border-edge bg-surface p-4 sm:grid-cols-2">
+          <div>
+            <label className="label" htmlFor={`upload-folder-${store.Id}`}>Folder in this library (optional)</label>
+            <input id={`upload-folder-${store.Id}`} className="input" value={uploadFolder} disabled={busy} onChange={event=>setUploadFolder(event.target.value)} placeholder="Show Name/Season 01" />
+          </div>
+          <div>
+            <label className="label" htmlFor={`upload-files-${store.Id}`}>Media files</label>
+            <input ref={uploadInputRef} id={`upload-files-${store.Id}`} className="input file:mr-3 file:rounded-md file:border-0 file:bg-accent file:px-3 file:py-1 file:text-white" type="file" multiple disabled={busy} accept="video/*,audio/*,.mkv,.m4v,.ts,.m2ts,.flac,.opus" onChange={event=>setUploadFiles(Array.from(event.target.files??[]))} />
+          </div>
+          <div className="sm:col-span-2">
+            {uploadFiles.length>0&&<p className="muted mb-2 text-sm">{uploadFiles.length} file{uploadFiles.length===1?"":"s"} selected · {(uploadFiles.reduce((sum,file)=>sum+file.size,0)/(1024*1024*1024)).toFixed(2)} GB</p>}
+            {(uploadLabel&&uploadStoreId===store.Id)&&<div className="mb-3">
+              <div className="mb-1 flex justify-between gap-3 text-sm"><span className="truncate">{uploadLabel}</span><span>{Math.round(uploadProgress)}%</span></div>
+              <div className="h-2 overflow-hidden rounded-full bg-surface-hover"><div className="h-full bg-accent transition-[width]" style={{width:`${uploadProgress}%`}} /></div>
+            </div>}
+            <button className="btn btn-primary" disabled={busy||uploadFiles.length===0} onClick={()=>void upload(store)}>{uploadLabel&&uploadStoreId===store.Id?"Uploading…":"Upload and add to library"}</button>
+          </div>
+        </div>}
+      </li>)}</ul>}
   </div>;
 }

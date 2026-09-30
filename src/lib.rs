@@ -143,6 +143,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/ObjectStores/{id}", delete(object_storage::remove))
         .route("/ObjectStores/{id}/Sync", post(object_storage::sync))
+        .route(
+            "/ObjectStores/{id}/Upload",
+            axum::routing::put(object_storage::upload),
+        )
         .route("/ObjectItems/{id}/stream", get(object_storage::stream))
         .route("/RemoteServers/{id}", delete(remote::remove))
         .route("/RemoteServers/{id}/Sync", post(remote::sync))

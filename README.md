@@ -116,4 +116,4 @@ The smoke test generates a one-second video with FFmpeg, starts the real binary 
 
 ## S3-compatible object storage
 
-Administrators can connect private AWS S3 and Cloudflare R2 buckets from **Administration → Object storage**. Each connection becomes a media library and supports direct range streaming, FFmpeg playback, metadata scans, and embedded subtitle extraction without downloading the media into Jellymax's persistent storage. See [DEPLOYMENT.md](DEPLOYMENT.md#aws-s3-and-cloudflare-r2-media) for credentials and endpoint setup.
+Administrators can connect private AWS S3 and Cloudflare R2 buckets from **Administration → Object storage**. Each connection becomes a media library and supports browser uploads with progress, direct range streaming, FFmpeg playback, metadata scans, and embedded subtitle extraction without downloading the media into Jellymax's persistent storage. See [DEPLOYMENT.md](DEPLOYMENT.md#aws-s3-and-cloudflare-r2-media) for credentials and endpoint setup.

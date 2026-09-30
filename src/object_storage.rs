@@ -6,18 +6,20 @@ use crate::{
 use axum::{
     Json,
     body::Body,
-    extract::{Path as AxumPath, Request, State},
+    extract::{Path as AxumPath, Query, Request, State},
     http::{Method, StatusCode, header},
     response::Response,
 };
 use futures_util::StreamExt;
 use object_store::{
-    GetOptions, GetRange, ObjectStore, ObjectStoreExt, aws::AmazonS3Builder, path::Path,
+    Attribute, Attributes, GetOptions, GetRange, ObjectStore, ObjectStoreExt, aws::AmazonS3Builder,
+    buffered::BufWriter, path::Path,
 };
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{ops::Range, sync::Arc, time::Duration};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 #[derive(Clone)]
@@ -56,6 +58,32 @@ pub struct NewStore {
     secret_access_key: String,
     session_token: Option<String>,
     collection_type: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct UploadQuery {
+    path: String,
+}
+
+fn upload_location(prefix: &str, requested: &str) -> Result<Path> {
+    let requested = requested.trim_matches('/');
+    if requested.is_empty()
+        || requested.len() > 900
+        || requested.contains('\\')
+        || requested.chars().any(char::is_control)
+        || requested
+            .split('/')
+            .any(|part| part.is_empty() || matches!(part, "." | ".."))
+    {
+        return Err(Error::bad("Invalid upload path"));
+    }
+    let key = if prefix.is_empty() {
+        requested.to_owned()
+    } else {
+        format!("{}/{requested}", prefix.trim_matches('/'))
+    };
+    Path::parse(key).map_err(|_| Error::bad("Invalid upload path"))
 }
 
 fn store(config: &StoreConfig) -> Result<Arc<dyn ObjectStore>> {
@@ -280,6 +308,106 @@ pub async fn sync(
     auth.admin()?;
     let count = sync_store(&state, store_id).await?;
     Ok(Json(json!({"Items":count})))
+}
+
+pub async fn upload(
+    auth: Auth,
+    State(state): State<AppState>,
+    AxumPath(store_id): AxumPath<String>,
+    Query(query): Query<UploadQuery>,
+    request: Request,
+) -> Result<(StatusCode, Json<Value>)> {
+    auth.admin()?;
+    let config = config_for_store(&state, store_id).await?;
+    let kind = state
+        .db
+        .call({
+            let store_id = config.id.clone();
+            move |connection| {
+                connection
+                    .query_row(
+                        "SELECT kind FROM libraries WHERE object_store_id=?1",
+                        [store_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .ok_or_else(Error::missing)
+            }
+        })
+        .await?;
+    if crate::scanner::media_extension(std::path::Path::new(&query.path), &kind).is_none() {
+        return Err(Error::bad(
+            "This file type is not supported by the target library",
+        ));
+    }
+    let location = upload_location(&config.prefix, &query.path)?;
+    let backend = store(&config)?;
+
+    match backend.head(&location).await {
+        Ok(_) => {
+            return Err(Error(
+                StatusCode::CONFLICT,
+                "An object already exists at this path".into(),
+            ));
+        }
+        Err(object_store::Error::NotFound { .. }) => {}
+        Err(error) => {
+            return Err(Error(
+                StatusCode::BAD_GATEWAY,
+                format!("Could not check the upload destination: {error}"),
+            ));
+        }
+    }
+
+    let content_type = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let mut attributes = Attributes::new();
+    if let Some(content_type) = content_type {
+        attributes.insert(Attribute::ContentType, content_type.into());
+    }
+    let mut writer = BufWriter::with_capacity(backend, location.clone(), 8 * 1024 * 1024)
+        .with_max_concurrency(3)
+        .with_attributes(attributes);
+    let mut stream = request.into_body().into_data_stream();
+    let mut size = 0_u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                let _ = writer.abort().await;
+                return Err(Error::bad(&format!("Upload was interrupted: {error}")));
+            }
+        };
+        size = size
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(|| Error::bad("Upload is too large"))?;
+        if let Err(error) = writer.put(chunk).await {
+            let _ = writer.abort().await;
+            return Err(Error(
+                StatusCode::BAD_GATEWAY,
+                format!("Object upload failed: {error}"),
+            ));
+        }
+    }
+    if size == 0 {
+        let _ = writer.abort().await;
+        return Err(Error::bad("Cannot upload an empty file"));
+    }
+    if let Err(error) = writer.shutdown().await {
+        return Err(Error(
+            StatusCode::BAD_GATEWAY,
+            format!("Object upload failed: {error}"),
+        ));
+    }
+    tracing::info!(store=%config.id, key=%location, size, "Object uploaded");
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({"Key":location.to_string(),"Size":size})),
+    ))
 }
 
 async fn sync_store(state: &AppState, store_id: String) -> Result<usize> {
@@ -629,6 +757,20 @@ pub async fn is_item(state: &AppState, item: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_location_stays_inside_configured_prefix() {
+        assert_eq!(
+            upload_location("Movies", "Drama/Fight Club.mkv")
+                .unwrap()
+                .as_ref(),
+            "Movies/Drama/Fight Club.mkv"
+        );
+        assert!(upload_location("Movies", "../secret.mkv").is_err());
+        assert!(upload_location("Movies", "Drama//film.mkv").is_err());
+        assert!(upload_location("Movies", "Drama\\film.mkv").is_err());
+        assert!(upload_location("Movies", "").is_err());
+    }
 
     #[test]
     fn parses_browser_byte_ranges() {

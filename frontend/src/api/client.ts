@@ -87,6 +87,43 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
+function uploadRequest(
+  storeId: string,
+  path: string,
+  file: File,
+  onProgress: (loaded: number, total: number) => void,
+): Promise<{ Key: string; Size: number }> {
+  return new Promise((resolve, reject) => {
+    const query = new URLSearchParams({ Path: path });
+    const xhr = new XMLHttpRequest();
+    xhr.open(
+      "PUT",
+      resolveUrl(`/ObjectStores/${encodeURIComponent(storeId)}/Upload?${query}`),
+    );
+    const token = getToken();
+    if (token) xhr.setRequestHeader("X-Emby-Token", token);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.upload.onprogress = (event) =>
+      onProgress(event.loaded, event.lengthComputable ? event.total : file.size);
+    xhr.onerror = () => reject(new Error("Upload failed because the server could not be reached"));
+    xhr.onabort = () => reject(new Error("Upload cancelled"));
+    xhr.onload = () => {
+      let body: { Error?: string; Key?: string; Size?: number } = {};
+      try {
+        body = JSON.parse(xhr.responseText) as typeof body;
+      } catch {
+        // Keep the HTTP status error when an intermediary returned a non-JSON response.
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(body.Error || `Upload failed (${xhr.status})`));
+        return;
+      }
+      resolve({ Key: body.Key ?? path, Size: body.Size ?? file.size });
+    };
+    xhr.send(file);
+  });
+}
+
 export interface ItemQuery {
   ParentId?: string;
   Recursive?: boolean;
@@ -168,6 +205,12 @@ export const api = {
     }),
   syncObjectStore: (id: string) =>
     request<{ Items: number }>(`/ObjectStores/${encodeURIComponent(id)}/Sync`, { method: "POST" }),
+  uploadObject: (
+    id: string,
+    path: string,
+    file: File,
+    onProgress: (loaded: number, total: number) => void,
+  ) => uploadRequest(id, path, file, onProgress),
   removeObjectStore: (id: string) =>
     request<void>(`/ObjectStores/${encodeURIComponent(id)}`, { method: "DELETE" }),
   // Admin-only: re-run the TMDb match for one movie. Matched=false means
