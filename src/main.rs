@@ -10,8 +10,8 @@ use tower_http::{
 #[derive(Parser)]
 #[command(version, about)]
 struct Options {
-    #[arg(long, env = "JELLYMAX_DATA_DIR", default_value = "data")]
-    data_dir: PathBuf,
+    #[arg(long, env = "JELLYMAX_DATA_DIR")]
+    data_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -44,6 +44,11 @@ enum Command {
         #[arg(long)]
         username: String,
     },
+    /// Open the locally running Jellymax web interface in the default browser.
+    Open {
+        #[arg(long, default_value = "http://localhost:8097")]
+        url: String,
+    },
 }
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -54,13 +59,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
     let options = Options::parse();
-    std::fs::create_dir_all(&options.data_dir)?;
+    if let Command::Open { url } = &options.command {
+        open_browser(url)?;
+        return Ok(());
+    }
+    let data_dir = options.data_dir.unwrap_or_else(default_data_dir);
+    std::fs::create_dir_all(&data_dir)?;
     let _instance = if matches!(&options.command, Command::Serve { .. }) {
-        Some(ServerInstance::acquire(&options.data_dir)?)
+        Some(ServerInstance::acquire(&data_dir)?)
     } else {
         None
     };
-    let db = Database::open(&options.data_dir.join("jellyfin.db"))?;
+    let db = Database::open(&data_dir.join("jellyfin.db"))?;
     match options.command {
         Command::CreateAdmin { username } => {
             let password = std::env::var("JELLYMAX_ADMIN_PASSWORD").map_err(
@@ -83,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 db,
                 name,
                 ffprobe,
-                options.data_dir.clone(),
+                data_dir.clone(),
                 jellymax::tmdb::TmdbConfig {
                     api_key: tmdb_api_key,
                     language: tmdb_language,
@@ -98,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             *state.internal_origin.write().await =
                 format!("http://127.0.0.1:{}", listener.local_addr()?.port());
             let mut app = router(state);
-            if let Some(web_dir) = web_dir.filter(|path| path.is_dir()) {
+            if let Some(web_dir) = resolve_web_dir(web_dir)? {
                 let index = web_dir.join("index.html");
                 app = app.fallback_service(ServeDir::new(web_dir).fallback(ServeFile::new(index)));
             }
@@ -132,8 +142,87 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_graceful_shutdown(shutdown())
                 .await?;
         }
+        Command::Open { .. } => unreachable!(),
     }
     Ok(())
+}
+
+fn default_data_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    if let Some(path) = std::env::var_os("APPDATA") {
+        return PathBuf::from(path).join("Jellymax");
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(path) = std::env::var_os("HOME") {
+        return PathBuf::from(path)
+            .join("Library")
+            .join("Application Support")
+            .join("Jellymax");
+    }
+    if let Some(path) = std::env::var_os("XDG_DATA_HOME") {
+        return PathBuf::from(path).join("jellymax");
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|path| path.join(".local").join("share").join("jellymax"))
+        .unwrap_or_else(|| PathBuf::from("data"))
+}
+
+fn resolve_web_dir(
+    explicit: Option<PathBuf>,
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    if let Some(path) = explicit {
+        if path.join("index.html").is_file() {
+            return Ok(Some(path));
+        }
+        return Err(format!("Web frontend was not found at {}", path.display()).into());
+    }
+    let executable = std::env::current_exe()?;
+    let executable_dir = executable
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let candidates = [
+        executable_dir.join("web"),
+        executable_dir.join("..").join("Resources").join("web"),
+        PathBuf::from("frontend").join("dist"),
+    ];
+    Ok(candidates
+        .into_iter()
+        .find(|path| path.join("index.html").is_file()))
+}
+
+fn open_browser(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let status = if cfg!(target_os = "windows") {
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
+            .status()?
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).status()?
+    } else {
+        std::process::Command::new("xdg-open").arg(url).status()?
+    };
+    if !status.success() {
+        return Err("Could not open the default browser".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_web_dir;
+
+    #[test]
+    fn explicit_web_directory_must_contain_an_index() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(resolve_web_dir(Some(directory.path().to_path_buf())).is_err());
+        std::fs::write(directory.path().join("index.html"), "<!doctype html>").unwrap();
+        assert_eq!(
+            resolve_web_dir(Some(directory.path().to_path_buf()))
+                .unwrap()
+                .unwrap(),
+            directory.path()
+        );
+    }
 }
 async fn shutdown() {
     let ctrl_c = async {

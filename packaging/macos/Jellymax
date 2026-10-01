@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+APP_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+RESOURCES="$APP_ROOT/Resources"
+DATA_DIR="$HOME/Library/Application Support/Jellymax"
+LOG_DIR="$HOME/Library/Logs"
+AGENT_DIR="$HOME/Library/LaunchAgents"
+AGENT="$AGENT_DIR/dev.jaret.jellymax.plist"
+mkdir -p "$DATA_DIR" "$LOG_DIR" "$AGENT_DIR"
+
+cat >"$AGENT" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.jaret.jellymax</string>
+  <key>ProgramArguments</key><array>
+    <string>$RESOURCES/jellymax</string><string>--data-dir</string><string>$DATA_DIR</string>
+    <string>serve</string><string>--bind</string><string>127.0.0.1:8097</string>
+    <string>--web-dir</string><string>$RESOURCES/web</string>
+    <string>--ffmpeg</string><string>$RESOURCES/ffmpeg</string>
+    <string>--ffprobe</string><string>$RESOURCES/ffprobe</string>
+  </array>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$LOG_DIR/Jellymax.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/Jellymax.error.log</string>
+</dict></plist>
+EOF
+
+launchctl bootout "gui/$(id -u)/dev.jaret.jellymax" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "$AGENT"
+launchctl kickstart -k "gui/$(id -u)/dev.jaret.jellymax"
+i=0
+while [ "$i" -lt 40 ]; do
+  if curl -fsS http://127.0.0.1:8097/health >/dev/null 2>&1; then
+    open http://127.0.0.1:8097
+    exit 0
+  fi
+  i=$((i + 1))
+  sleep 0.25
+done
+open http://127.0.0.1:8097

@@ -117,3 +117,14 @@ The smoke test generates a one-second video with FFmpeg, starts the real binary 
 ## S3-compatible object storage
 
 Administrators can connect private AWS S3 and Cloudflare R2 buckets from **Administration → Object storage**. Each connection becomes a media library and supports browser uploads with progress, direct range streaming, FFmpeg playback, metadata scans, and embedded subtitle extraction without downloading the media into Jellymax's persistent storage. See [DEPLOYMENT.md](DEPLOYMENT.md#aws-s3-and-cloudflare-r2-media) for credentials and endpoint setup.
+
+## Native service installers
+
+Jellymax can run as a native background service while serving the compiled web frontend at `http://localhost:8097`. The server discovers a `web` directory beside its executable (or in a macOS app Resources directory); `--web-dir` and `JELLYMAX_WEB_DIR` remain available for explicit paths. `jellymax open` opens the local interface.
+
+The **Build native installers** GitHub Actions workflow produces:
+
+- a macOS Apple Silicon `.dmg` whose launcher installs a per-user `launchd` service;
+- a Windows x64 `.exe` installer which uses NSSM to install an automatic Windows service.
+
+These unsigned development installers may trigger Gatekeeper or SmartScreen warnings. Public releases should add Apple signing/notarization and Windows Authenticode signing secrets. Docker remains a separate supported deployment and continues using the explicit `/data` and `/srv` paths in its existing images.

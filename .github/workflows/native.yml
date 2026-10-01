@@ -1,0 +1,89 @@
+name: Build native installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - jellymax-v*
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci --prefix frontend
+      - run: npm run build --prefix frontend
+      - run: cargo build --release --locked
+      - run: brew install dylibbundler ffmpeg
+      - name: Assemble application and DMG
+        run: |
+          mkdir -p dist/dmg-root
+          APP=dist/dmg-root/Jellymax.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/web"
+          cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
+          cp packaging/macos/Jellymax "$APP/Contents/MacOS/Jellymax"
+          chmod +x "$APP/Contents/MacOS/Jellymax"
+          cp target/release/jellymax "$APP/Contents/Resources/jellymax"
+          cp "$(command -v ffmpeg)" "$(command -v ffprobe)" "$APP/Contents/Resources/"
+          mkdir -p "$APP/Contents/Resources/lib"
+          dylibbundler -od -b -x "$APP/Contents/Resources/ffmpeg" -d "$APP/Contents/Resources/lib" -p @executable_path/lib
+          dylibbundler -od -b -x "$APP/Contents/Resources/ffprobe" -d "$APP/Contents/Resources/lib" -p @executable_path/lib
+          cp -R frontend/dist/. "$APP/Contents/Resources/web/"
+          ln -s /Applications dist/dmg-root/Applications
+          hdiutil create -volname Jellymax -srcfolder dist/dmg-root -ov -format UDZO dist/Jellymax-macOS-arm64.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jellymax-macOS-arm64
+          path: dist/Jellymax-macOS-arm64.dmg
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/Jellymax-macOS-arm64.dmg
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci --prefix frontend
+      - run: npm run build --prefix frontend
+      - run: cargo build --release --locked
+      - run: choco install ffmpeg nssm innosetup -y
+      - name: Assemble installer input
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force stage/windows/web, dist | Out-Null
+          Copy-Item target/release/jellymax.exe stage/windows/
+          Copy-Item frontend/dist/* stage/windows/web/ -Recurse
+          Copy-Item packaging/windows/*.ps1 stage/windows/
+          $ffmpeg = Get-ChildItem C:\ProgramData\chocolatey\lib\ffmpeg\tools -Filter ffmpeg.exe -Recurse | Select-Object -First 1
+          $ffprobe = Get-ChildItem C:\ProgramData\chocolatey\lib\ffmpeg\tools -Filter ffprobe.exe -Recurse | Select-Object -First 1
+          $nssm = Get-ChildItem C:\ProgramData\chocolatey\lib\nssm\tools -Filter nssm.exe -Recurse | Where-Object FullName -Match win64 | Select-Object -First 1
+          Copy-Item $ffmpeg.FullName stage/windows/ffmpeg.exe
+          Copy-Item $ffprobe.FullName stage/windows/ffprobe.exe
+          Copy-Item $nssm.FullName stage/windows/nssm.exe
+      - name: Build EXE installer
+        shell: pwsh
+        run: iscc packaging/windows/Jellymax.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jellymax-Windows-x64
+          path: dist/Jellymax-Windows-x64.exe
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/Jellymax-Windows-x64.exe
