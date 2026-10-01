@@ -85,8 +85,12 @@ struct UploadSession {
     upload: Box<dyn MultipartUpload>,
     next_part: u32,
     size: u64,
+    pending: Vec<u8>,
     touched: Instant,
 }
+
+const BROWSER_PART_SIZE: usize = 1024 * 1024;
+const STORAGE_PART_SIZE: usize = 6 * 1024 * 1024;
 
 #[derive(Clone, Default)]
 pub struct UploadSessions(Arc<AsyncMutex<HashMap<String, UploadSession>>>);
@@ -437,12 +441,13 @@ pub async fn begin_upload(
             upload,
             next_part: 0,
             size: 0,
+            pending: Vec::with_capacity(STORAGE_PART_SIZE),
             touched: Instant::now(),
         },
     );
     Ok((
         StatusCode::CREATED,
-        Json(json!({"UploadId":upload_id,"PartSize":6 * 1024 * 1024})),
+        Json(json!({"UploadId":upload_id,"PartSize":BROWSER_PART_SIZE})),
     ))
 }
 
@@ -454,7 +459,7 @@ pub async fn upload_part(
     request: Request,
 ) -> Result<StatusCode> {
     auth.admin()?;
-    let bytes = axum::body::to_bytes(request.into_body(), 7 * 1024 * 1024)
+    let bytes = axum::body::to_bytes(request.into_body(), BROWSER_PART_SIZE + 64 * 1024)
         .await
         .map_err(|_| {
             Error(
@@ -482,12 +487,17 @@ pub async fn upload_part(
         }
         session
     };
-    if let Err(error) = session.upload.put_part(bytes.into()).await {
-        let _ = session.upload.abort().await;
-        return Err(Error(
-            StatusCode::BAD_GATEWAY,
-            format!("Object upload failed: {error}"),
-        ));
+    session.pending.extend_from_slice(&bytes);
+    if session.pending.len() >= STORAGE_PART_SIZE {
+        let tail = session.pending.split_off(STORAGE_PART_SIZE);
+        let storage_part = std::mem::replace(&mut session.pending, tail);
+        if let Err(error) = session.upload.put_part(storage_part.into()).await {
+            let _ = session.upload.abort().await;
+            return Err(Error(
+                StatusCode::BAD_GATEWAY,
+                format!("Object upload failed: {error}"),
+            ));
+        }
     }
     session.next_part += 1;
     session.size += part_size;
@@ -526,6 +536,16 @@ pub async fn complete_upload(
     if session.size == 0 {
         let _ = session.upload.abort().await;
         return Err(Error::bad("Cannot upload an empty file"));
+    }
+    if !session.pending.is_empty() {
+        let final_part = std::mem::take(&mut session.pending);
+        if let Err(error) = session.upload.put_part(final_part.into()).await {
+            let _ = session.upload.abort().await;
+            return Err(Error(
+                StatusCode::BAD_GATEWAY,
+                format!("Object upload failed: {error}"),
+            ));
+        }
     }
     if let Err(error) = session.upload.complete().await {
         let _ = session.upload.abort().await;
