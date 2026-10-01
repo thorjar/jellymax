@@ -84,8 +84,10 @@ jobs:
         shell: pwsh
         run: |
           $installer = (Resolve-Path dist/Jellymax-Windows-x64.exe).Path
-          $process = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          $installerLog = Join-Path $env:RUNNER_TEMP "jellymax-installer.log"
+          $process = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=$installerLog" -Wait -PassThru
           if ($process.ExitCode -ne 0) {
+            Get-Content $installerLog -Tail 100 -ErrorAction SilentlyContinue
             $log = "C:\ProgramData\Jellymax\logs\server-error.log"
             if (Test-Path $log) { Get-Content $log -Tail 50 }
             throw "Installer exited with code $($process.ExitCode)"
@@ -101,6 +103,7 @@ jobs:
             } catch { Start-Sleep -Seconds 1 }
           }
           if (-not $healthy) {
+            Get-Content $installerLog -Tail 100 -ErrorAction SilentlyContinue
             Get-ChildItem C:\ProgramData\Jellymax\logs -ErrorAction SilentlyContinue
             Get-Content C:\ProgramData\Jellymax\logs\server.log -Tail 80 -ErrorAction SilentlyContinue
             Get-Content C:\ProgramData\Jellymax\logs\server-error.log -Tail 80 -ErrorAction SilentlyContinue
