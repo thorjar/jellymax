@@ -13,8 +13,10 @@ function Invoke-Nssm {
     }
 }
 
-& $nssm stop Jellymax confirm 2>$null | Out-Null
-& $nssm remove Jellymax confirm 2>$null | Out-Null
+if (Get-Service -Name Jellymax -ErrorAction SilentlyContinue) {
+    Invoke-Nssm stop Jellymax confirm
+    Invoke-Nssm remove Jellymax confirm
+}
 Invoke-Nssm install Jellymax (Join-Path $root "jellymax.exe")
 Invoke-Nssm set Jellymax AppParameters "--data-dir `"$data`" serve --bind 127.0.0.1:8097 --web-dir `"$(Join-Path $root 'web')`" --ffmpeg `"$(Join-Path $root 'ffmpeg.exe')`" --ffprobe `"$(Join-Path $root 'ffprobe.exe')`""
 Invoke-Nssm set Jellymax AppDirectory $root
