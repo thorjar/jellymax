@@ -30,6 +30,7 @@ jobs:
           APP=dist/dmg-root/Jellymax.app
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/web"
           cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
+          cp packaging/icons/Jellymax.icns "$APP/Contents/Resources/Jellymax.icns"
           cp packaging/macos/Jellymax "$APP/Contents/MacOS/Jellymax"
           chmod +x "$APP/Contents/MacOS/Jellymax"
           cp target/release/jellymax "$APP/Contents/Resources/jellymax"
@@ -70,6 +71,7 @@ jobs:
           Copy-Item target/release/jellymax.exe stage/windows/
           Copy-Item frontend/dist/* stage/windows/web/ -Recurse
           Copy-Item packaging/windows/*.ps1 stage/windows/
+          Copy-Item packaging/icons/jellymax.ico stage/windows/
           $ffmpeg = Get-ChildItem C:\ProgramData\chocolatey\lib\ffmpeg\tools -Filter ffmpeg.exe -Recurse | Select-Object -First 1
           $ffprobe = Get-ChildItem C:\ProgramData\chocolatey\lib\ffmpeg\tools -Filter ffprobe.exe -Recurse | Select-Object -First 1
           $nssm = Get-ChildItem C:\ProgramData\chocolatey\lib -Filter nssm.exe -Recurse | Where-Object Length -GT 100000 | Sort-Object Length -Descending | Select-Object -First 1

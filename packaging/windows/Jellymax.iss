@@ -6,6 +6,8 @@ DefaultDirName={autopf}\Jellymax
 DefaultGroupName=Jellymax
 OutputDir=..\..\dist
 OutputBaseFilename=Jellymax-Windows-x64
+SetupIconFile=..\icons\jellymax.ico
+UninstallDisplayIcon={app}\jellymax.ico
 Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=admin
@@ -16,8 +18,8 @@ ArchitecturesInstallIn64BitMode=x64compatible
 Source: "..\..\stage\windows\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
-Name: "{group}\Open Jellymax"; Filename: "http://localhost:8097"
-Name: "{commondesktop}\Jellymax"; Filename: "http://localhost:8097"
+Name: "{group}\Open Jellymax"; Filename: "http://localhost:8097"; IconFilename: "{app}\jellymax.ico"
+Name: "{commondesktop}\Jellymax"; Filename: "http://localhost:8097"; IconFilename: "{app}\jellymax.ico"
 
 [Run]
 Filename: "powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\install-service.ps1"""; WorkingDir: "{app}"; Flags: runhidden waituntilterminated logoutput
