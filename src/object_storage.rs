@@ -12,15 +12,20 @@ use axum::{
 };
 use futures_util::StreamExt;
 use object_store::{
-    Attribute, Attributes, GetOptions, GetRange, ObjectStore, ObjectStoreExt, aws::AmazonS3Builder,
-    buffered::BufWriter, path::Path,
+    Attribute, Attributes, GetOptions, GetRange, MultipartUpload, ObjectStore, ObjectStoreExt,
+    PutMultipartOptions, aws::AmazonS3Builder, path::Path,
 };
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{ops::Range, sync::Arc, time::Duration};
-use tokio::io::AsyncWriteExt;
+use std::{
+    collections::HashMap,
+    ops::Range,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::process::Command;
+use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Clone)]
 struct StoreConfig {
@@ -64,7 +69,27 @@ pub struct NewStore {
 #[serde(rename_all = "PascalCase")]
 pub struct UploadQuery {
     path: String,
+    content_type: Option<String>,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct PartQuery {
+    index: u32,
+}
+
+struct UploadSession {
+    owner: String,
+    store_id: String,
+    location: Path,
+    upload: Box<dyn MultipartUpload>,
+    next_part: u32,
+    size: u64,
+    touched: Instant,
+}
+
+#[derive(Clone, Default)]
+pub struct UploadSessions(Arc<AsyncMutex<HashMap<String, UploadSession>>>);
 
 fn upload_location(prefix: &str, requested: &str) -> Result<Path> {
     let requested = requested.trim_matches('/');
@@ -310,12 +335,11 @@ pub async fn sync(
     Ok(Json(json!({"Items":count})))
 }
 
-pub async fn upload(
+pub async fn begin_upload(
     auth: Auth,
     State(state): State<AppState>,
     AxumPath(store_id): AxumPath<String>,
     Query(query): Query<UploadQuery>,
-    request: Request,
 ) -> Result<(StatusCode, Json<Value>)> {
     auth.admin()?;
     let config = config_for_store(&state, store_id).await?;
@@ -359,55 +383,187 @@ pub async fn upload(
         }
     }
 
-    let content_type = request
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned);
     let mut attributes = Attributes::new();
-    if let Some(content_type) = content_type {
+    if let Some(content_type) = query.content_type.filter(|value| !value.is_empty()) {
+        if content_type.len() > 128 {
+            return Err(Error::bad("Invalid content type"));
+        }
         attributes.insert(Attribute::ContentType, content_type.into());
     }
-    let mut writer = BufWriter::with_capacity(backend, location.clone(), 8 * 1024 * 1024)
-        .with_max_concurrency(3)
-        .with_attributes(attributes);
-    let mut stream = request.into_body().into_data_stream();
-    let mut size = 0_u64;
-    while let Some(chunk) = stream.next().await {
-        let chunk = match chunk {
-            Ok(chunk) => chunk,
-            Err(error) => {
-                let _ = writer.abort().await;
-                return Err(Error::bad(&format!("Upload was interrupted: {error}")));
-            }
-        };
-        size = size
-            .checked_add(chunk.len() as u64)
-            .ok_or_else(|| Error::bad("Upload is too large"))?;
-        if let Err(error) = writer.put(chunk).await {
-            let _ = writer.abort().await;
-            return Err(Error(
+    let upload = backend
+        .put_multipart_opts(
+            &location,
+            PutMultipartOptions {
+                attributes,
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| {
+            Error(
                 StatusCode::BAD_GATEWAY,
-                format!("Object upload failed: {error}"),
-            ));
+                format!("Could not begin upload: {error}"),
+            )
+        })?;
+    let upload_id = id();
+    let mut sessions = state.object_uploads.0.lock().await;
+    let expired = sessions
+        .iter()
+        .filter(|(_, session)| session.touched.elapsed() > Duration::from_secs(3600))
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    for id in expired {
+        if let Some(mut session) = sessions.remove(&id) {
+            tokio::spawn(async move {
+                let _ = session.upload.abort().await;
+            });
         }
     }
-    if size == 0 {
-        let _ = writer.abort().await;
-        return Err(Error::bad("Cannot upload an empty file"));
+    if sessions.len() >= 8 {
+        drop(sessions);
+        let mut upload = upload;
+        let _ = upload.abort().await;
+        return Err(Error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many active uploads".into(),
+        ));
     }
-    if let Err(error) = writer.shutdown().await {
+    sessions.insert(
+        upload_id.clone(),
+        UploadSession {
+            owner: auth.token_hash,
+            store_id: config.id,
+            location,
+            upload,
+            next_part: 0,
+            size: 0,
+            touched: Instant::now(),
+        },
+    );
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({"UploadId":upload_id,"PartSize":6 * 1024 * 1024})),
+    ))
+}
+
+pub async fn upload_part(
+    auth: Auth,
+    State(state): State<AppState>,
+    AxumPath((store_id, upload_id)): AxumPath<(String, String)>,
+    Query(query): Query<PartQuery>,
+    request: Request,
+) -> Result<StatusCode> {
+    auth.admin()?;
+    let bytes = axum::body::to_bytes(request.into_body(), 7 * 1024 * 1024)
+        .await
+        .map_err(|_| {
+            Error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Upload part is too large".into(),
+            )
+        })?;
+    if bytes.is_empty() {
+        return Err(Error::bad("Upload part is empty"));
+    }
+    let part_size = bytes.len() as u64;
+    let mut session = {
+        let mut sessions = state.object_uploads.0.lock().await;
+        let session = sessions.remove(&upload_id).ok_or_else(Error::missing)?;
+        if session.owner != auth.token_hash || session.store_id != store_id {
+            sessions.insert(upload_id, session);
+            return Err(Error::forbidden());
+        }
+        if session.next_part != query.index {
+            sessions.insert(upload_id, session);
+            return Err(Error(
+                StatusCode::CONFLICT,
+                "Upload parts must be sent in order".into(),
+            ));
+        }
+        session
+    };
+    if let Err(error) = session.upload.put_part(bytes.into()).await {
+        let _ = session.upload.abort().await;
         return Err(Error(
             StatusCode::BAD_GATEWAY,
             format!("Object upload failed: {error}"),
         ));
     }
-    tracing::info!(store=%config.id, key=%location, size, "Object uploaded");
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({"Key":location.to_string(),"Size":size})),
+    session.next_part += 1;
+    session.size += part_size;
+    session.touched = Instant::now();
+    state
+        .object_uploads
+        .0
+        .lock()
+        .await
+        .insert(upload_id, session);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn complete_upload(
+    auth: Auth,
+    State(state): State<AppState>,
+    AxumPath((store_id, upload_id)): AxumPath<(String, String)>,
+) -> Result<Json<Value>> {
+    auth.admin()?;
+    let mut session = state
+        .object_uploads
+        .0
+        .lock()
+        .await
+        .remove(&upload_id)
+        .ok_or_else(Error::missing)?;
+    if session.owner != auth.token_hash || session.store_id != store_id {
+        state
+            .object_uploads
+            .0
+            .lock()
+            .await
+            .insert(upload_id, session);
+        return Err(Error::forbidden());
+    }
+    if session.size == 0 {
+        let _ = session.upload.abort().await;
+        return Err(Error::bad("Cannot upload an empty file"));
+    }
+    if let Err(error) = session.upload.complete().await {
+        let _ = session.upload.abort().await;
+        return Err(Error(
+            StatusCode::BAD_GATEWAY,
+            format!("Could not complete upload: {error}"),
+        ));
+    }
+    tracing::info!(store=%store_id, key=%session.location, size=session.size, "Object uploaded");
+    Ok(Json(
+        json!({"Key":session.location.to_string(),"Size":session.size}),
     ))
+}
+
+pub async fn abort_upload(
+    auth: Auth,
+    State(state): State<AppState>,
+    AxumPath((store_id, upload_id)): AxumPath<(String, String)>,
+) -> Result<StatusCode> {
+    auth.admin()?;
+    let mut session = state
+        .object_uploads
+        .0
+        .lock()
+        .await
+        .remove(&upload_id)
+        .ok_or_else(Error::missing)?;
+    if session.owner != auth.token_hash || session.store_id != store_id {
+        state
+            .object_uploads
+            .0
+            .lock()
+            .await
+            .insert(upload_id, session);
+        return Err(Error::forbidden());
+    }
+    let _ = session.upload.abort().await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn sync_store(state: &AppState, store_id: String) -> Result<usize> {

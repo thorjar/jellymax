@@ -87,28 +87,27 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
-function uploadRequest(
+function uploadPartRequest(
   storeId: string,
-  path: string,
-  file: File,
-  onProgress: (loaded: number, total: number) => void,
-): Promise<{ Key: string; Size: number }> {
+  uploadId: string,
+  index: number,
+  part: Blob,
+  onProgress: (loaded: number) => void,
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const query = new URLSearchParams({ Path: path });
     const xhr = new XMLHttpRequest();
     xhr.open(
       "PUT",
-      resolveUrl(`/ObjectStores/${encodeURIComponent(storeId)}/Upload?${query}`),
+      resolveUrl(`/ObjectStores/${encodeURIComponent(storeId)}/Uploads/${encodeURIComponent(uploadId)}/Part?Index=${index}`),
     );
     const token = getToken();
     if (token) xhr.setRequestHeader("X-Emby-Token", token);
-    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
-    xhr.upload.onprogress = (event) =>
-      onProgress(event.loaded, event.lengthComputable ? event.total : file.size);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (event) => onProgress(event.loaded);
     xhr.onerror = () => reject(new Error("Upload failed because the server could not be reached"));
     xhr.onabort = () => reject(new Error("Upload cancelled"));
     xhr.onload = () => {
-      let body: { Error?: string; Key?: string; Size?: number } = {};
+      let body: { Error?: string } = {};
       try {
         body = JSON.parse(xhr.responseText) as typeof body;
       } catch {
@@ -118,10 +117,50 @@ function uploadRequest(
         reject(new Error(body.Error || `Upload failed (${xhr.status})`));
         return;
       }
-      resolve({ Key: body.Key ?? path, Size: body.Size ?? file.size });
+      resolve();
     };
-    xhr.send(file);
+    xhr.send(part);
   });
+}
+
+async function uploadRequest(
+  storeId: string,
+  path: string,
+  file: File,
+  onProgress: (loaded: number, total: number) => void,
+): Promise<{ Key: string; Size: number }> {
+  const query = new URLSearchParams({ Path: path, ContentType: file.type || "application/octet-stream" });
+  const started = await request<{ UploadId: string; PartSize: number }>(
+    `/ObjectStores/${encodeURIComponent(storeId)}/Uploads?${query}`,
+    { method: "POST" },
+  );
+  let offset = 0;
+  let index = 0;
+  try {
+    while (offset < file.size) {
+      const end = Math.min(offset + started.PartSize, file.size);
+      await uploadPartRequest(storeId, started.UploadId, index, file.slice(offset, end), loaded =>
+        onProgress(offset + loaded, file.size),
+      );
+      offset = end;
+      index += 1;
+      onProgress(offset, file.size);
+    }
+    return await request<{ Key: string; Size: number }>(
+      `/ObjectStores/${encodeURIComponent(storeId)}/Uploads/${encodeURIComponent(started.UploadId)}`,
+      { method: "POST" },
+    );
+  } catch (error) {
+    try {
+      await request<void>(
+        `/ObjectStores/${encodeURIComponent(storeId)}/Uploads/${encodeURIComponent(started.UploadId)}`,
+        { method: "DELETE" },
+      );
+    } catch {
+      // The server also expires abandoned multipart sessions.
+    }
+    throw error;
+  }
 }
 
 export interface ItemQuery {

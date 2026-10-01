@@ -51,6 +51,7 @@ pub struct AppState {
     pub keyframe_safety: Arc<Mutex<HashMap<String, bool>>>,
     pub internal_origin: Arc<RwLock<String>>,
     pub internal_token: String,
+    pub object_uploads: object_storage::UploadSessions,
 }
 impl AppState {
     pub async fn new(
@@ -108,6 +109,7 @@ impl AppState {
             keyframe_safety: Arc::new(Mutex::new(HashMap::new())),
             internal_origin: Arc::new(RwLock::new(String::new())),
             internal_token: uuid::Uuid::new_v4().simple().to_string(),
+            object_uploads: object_storage::UploadSessions::default(),
         })
     }
 }
@@ -144,8 +146,16 @@ pub fn router(state: AppState) -> Router {
         .route("/ObjectStores/{id}", delete(object_storage::remove))
         .route("/ObjectStores/{id}/Sync", post(object_storage::sync))
         .route(
-            "/ObjectStores/{id}/Upload",
-            axum::routing::put(object_storage::upload).layer(DefaultBodyLimit::disable()),
+            "/ObjectStores/{id}/Uploads",
+            post(object_storage::begin_upload),
+        )
+        .route(
+            "/ObjectStores/{id}/Uploads/{upload}/Part",
+            axum::routing::put(object_storage::upload_part).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/ObjectStores/{id}/Uploads/{upload}",
+            post(object_storage::complete_upload).delete(object_storage::abort_upload),
         )
         .route("/ObjectItems/{id}/stream", get(object_storage::stream))
         .route("/RemoteServers/{id}", delete(remote::remove))

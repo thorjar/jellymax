@@ -134,7 +134,7 @@ async fn object_store_uploads_are_not_rejected_by_the_json_body_limit() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/ObjectStores/missing/Upload?Path=movie.mkv")
+                .uri("/ObjectStores/missing/Uploads/missing/Part?Index=0")
                 .header("X-Emby-Token", &s.token)
                 .header("Content-Type", "video/x-matroska")
                 .body(Body::from(vec![0_u8; 128 * 1024]))
