@@ -80,6 +80,18 @@ jobs:
       - name: Build EXE installer
         shell: pwsh
         run: iscc packaging/windows/Jellymax.iss
+      - name: Install and smoke-test Windows service
+        shell: pwsh
+        run: |
+          $installer = (Resolve-Path dist/Jellymax-Windows-x64.exe).Path
+          $process = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            $log = "C:\ProgramData\Jellymax\logs\server-error.log"
+            if (Test-Path $log) { Get-Content $log -Tail 50 }
+            throw "Installer exited with code $($process.ExitCode)"
+          }
+          $health = Invoke-RestMethod http://127.0.0.1:8097/health
+          if ($health.status -ne "ok") { throw "Installed Jellymax service is unhealthy" }
       - uses: actions/upload-artifact@v4
         with:
           name: Jellymax-Windows-x64
