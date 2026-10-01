@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { api, getToken, resolveUrl } from "../api/client";
-import type { Item, MediaSource, MediaStream } from "../api/types";
+import type { Item, MediaSegment, MediaSource, MediaStream } from "../api/types";
 import { TICKS_PER_SECOND, formatSeconds, ticksToSeconds } from "../lib/format";
 import { Spinner } from "./Spinner";
 import { PlaybackIcon } from "./PlaybackIcon";
@@ -42,6 +42,7 @@ export function Player({ item }: PlayerProps) {
   const [subtitleWindowStart, setSubtitleWindowStart] = useState(0);
   const [captionText, setCaptionText] = useState("");
   const [pictureInPicture, setPictureInPicture] = useState(false);
+  const [introSegments, setIntroSegments] = useState<MediaSegment[]>([]);
   const mediaRef = useRef<HTMLMediaElement | null>(null);
   const subtitleTrackRef = useRef<HTMLTrackElement | null>(null);
   const subtitleCuesRef = useRef<SubtitleCue[]>([]);
@@ -59,6 +60,16 @@ export function Player({ item }: PlayerProps) {
   const isAudio = item.MediaType === "Audio";
 
   useEffect(() => () => window.clearTimeout(controlsTimer.current), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setIntroSegments([]);
+    if (item.Type !== "Episode") return () => { cancelled = true; };
+    void api.mediaSegments(item.Id)
+      .then((result) => { if (!cancelled) setIntroSegments(result.Intro); })
+      .catch(() => { if (!cancelled) setIntroSegments([]); });
+    return () => { cancelled = true; };
+  }, [item.Id, item.Type]);
 
   useEffect(() => {
     let cancelled = false;
@@ -559,6 +570,11 @@ export function Player({ item }: PlayerProps) {
   };
 
   const playerControlsShown = controlsVisible || !playing || subtitleMenuOpen || audioMenuOpen;
+  const activeIntro = introSegments.find((segment) => {
+    const start = segment.StartTicks / TICKS_PER_SECOND;
+    const end = segment.EndTicks / TICKS_PER_SECOND;
+    return currentTime >= start && currentTime < end;
+  });
   return <div className={`mx-auto ${isAudio ? "max-w-2xl" : "max-w-4xl"}`}>
     {isAudio ? <audio {...commonProps} ref={mediaRef as RefObject<HTMLAudioElement>}
       className="w-full rounded-xl border border-edge bg-surface-raised p-3" />
@@ -581,6 +597,10 @@ export function Player({ item }: PlayerProps) {
           {subtitleError && <div className="pointer-events-none absolute inset-x-4 top-4 z-20 flex justify-center" role="status">
             <span className="rounded-md bg-black/80 px-3 py-2 text-sm text-amber-200">{subtitleError}</span>
           </div>}
+          {activeIntro && <button type="button" onClick={() => seek(activeIntro.EndTicks / TICKS_PER_SECOND)}
+            className={`absolute right-4 z-20 rounded-md border border-white/70 bg-black/80 px-4 py-2 text-sm font-semibold text-white shadow-lg transition-all hover:bg-white hover:text-black focus-visible:outline-2 focus-visible:outline-brand ${playerControlsShown ? "bottom-24 sm:bottom-20" : "bottom-5 sm:bottom-7"}`}>
+            Skip Intro
+          </button>}
           {captionText && <div className={`pointer-events-none absolute inset-x-5 z-10 flex justify-center text-center transition-[bottom] duration-200 ${playerControlsShown ? "bottom-24 sm:bottom-20" : "bottom-5 sm:bottom-7"}`} aria-live="off">
             <span className="max-w-[90%] whitespace-pre-line rounded bg-black/75 px-3 py-1.5 text-base font-semibold leading-snug text-white shadow-lg sm:text-lg">{captionText}</span>
           </div>}

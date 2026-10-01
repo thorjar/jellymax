@@ -15,6 +15,8 @@ import type {
   SubtitleSearchResult,
   ObjectStoreConnection,
   NewObjectStore,
+  ProviderStatus,
+  MediaSegments,
 } from "./types";
 
 const TOKEN_KEY = "jellymax_token";
@@ -205,6 +207,11 @@ export const api = {
       }),
     }),
 
+  // Provider settings
+  providerSettings: () => request<ProviderStatus>("/System/Providers"),
+  updateProviderSettings: (settings: { TmdbApiKey?: string; IntroDbApiKey?: string; OpenSubtitlesApiKey?: string }) =>
+    request<ProviderStatus>("/System/Providers", { method: "PUT", body: JSON.stringify(settings) }),
+
   // Libraries
   libraries: () => request<Library[]>("/Library/VirtualFolders"),
   createLibrary: (name: string, collectionType: string, location: string) =>
@@ -285,6 +292,7 @@ export const api = {
     request<Recommendation[]>(`/Recommendations?UserId=${encodeURIComponent(userId)}&ItemLimit=${itemLimit}`),
 
   // Playback
+  mediaSegments: (id: string) => request<MediaSegments>(`/Items/${encodeURIComponent(id)}/Segments`),
   playbackInfo: (id: string, supportsHevc = false, supportsMkv = false, supportsAc3 = false, supportsEac3 = false, deviceProfile?: unknown, startTimeTicks = 0) =>
     request<PlaybackInfo>(
       `/Items/${encodeURIComponent(id)}/PlaybackInfo?SupportsHevc=${supportsHevc}&SupportsMkv=${supportsMkv}&SupportsAc3=${supportsAc3}&SupportsEac3=${supportsEac3}&StartTimeTicks=${Math.max(0, startTimeTicks)}`,

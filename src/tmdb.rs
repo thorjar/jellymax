@@ -77,19 +77,13 @@ impl SearchHit {
 /// request itself failed (network, non-2xx, malformed body) so callers can
 /// tell the difference.
 pub async fn search(state: &AppState, query: &str, year: Option<i64>) -> Result<Vec<SearchHit>> {
-    let Some(key) = state
-        .tmdb
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-    else {
+    let Some(key) = state.provider_key("tmdb") else {
         return Err(Error::internal("TMDb is not configured"));
     };
     let search_url = format!("{}/search/movie", state.tmdb.api_base);
     let mut url = format!(
         "{search_url}?api_key={}&language={}&include_adult=false&query={}",
-        percent_encode(key),
+        percent_encode(&key),
         percent_encode(&state.tmdb.language),
         percent_encode(query),
     );
@@ -120,13 +114,13 @@ pub async fn genre_map(state: &AppState) -> GenreMap {
     {
         return genres.clone();
     }
-    let Some(key) = state.tmdb.api_key.as_deref() else {
+    let Some(key) = state.provider_key("tmdb") else {
         return vec![];
     };
     let genre_url = format!("{}/genre/movie/list", state.tmdb.api_base);
     let url = format!(
         "{genre_url}?api_key={}&language={}",
-        percent_encode(key),
+        percent_encode(&key),
         percent_encode(&language),
     );
     let Some(body) = curl_text(&url).await else {
@@ -190,17 +184,12 @@ pub async fn download_poster(state: &AppState, poster_path: &str, destination: &
 /// `path` is "<movie|tv>/<tmdb id>". Returns None when TMDb is not
 /// configured, the request fails, or the record has no backdrop.
 pub async fn backdrop_path(state: &AppState, path: &str) -> Option<String> {
-    let key = state
-        .tmdb
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|key| !key.is_empty())?;
+    let key = state.provider_key("tmdb")?;
     let url = format!(
         "{}/{}?api_key={}&language={}",
         state.tmdb.api_base,
         path,
-        percent_encode(key),
+        percent_encode(&key),
         percent_encode(&state.tmdb.language),
     );
     let body = curl_text(&url).await?;
@@ -564,7 +553,7 @@ pub(crate) fn parse_episode(raw: &str) -> Option<EpisodeRef> {
 /// matches are `Ok(())` — only request failures become errors, which the scan
 /// counts as metadata failures.
 pub async fn enrich_movie(state: &AppState, item_id: &str, raw_name: &str) -> Result<()> {
-    if !state.tmdb.enabled() {
+    if !state.provider_configured("tmdb") {
         return Ok(());
     }
     tokio::time::sleep(ENRICHMENT_DELAY).await;
@@ -576,19 +565,13 @@ pub async fn enrich_movie(state: &AppState, item_id: &str, raw_name: &str) -> Re
 /// Query TMDb's TV show search endpoint. Reuses `SearchHit`/`parse_search`,
 /// which normalise the TV field names (`name`, `first_air_date`).
 pub async fn search_tv(state: &AppState, query: &str) -> Result<Vec<SearchHit>> {
-    let Some(key) = state
-        .tmdb
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-    else {
+    let Some(key) = state.provider_key("tmdb") else {
         return Err(Error::internal("TMDb is not configured"));
     };
     let search_url = format!("{}/search/tv", state.tmdb.api_base);
     let url = format!(
         "{search_url}?api_key={}&language={}&include_adult=false&query={}",
-        percent_encode(key),
+        percent_encode(&key),
         percent_encode(&state.tmdb.language),
         percent_encode(query),
     );
@@ -608,15 +591,13 @@ pub async fn search_tv(state: &AppState, query: &str) -> Result<Vec<SearchHit>> 
 
 async fn tv_details(state: &AppState, path: &str) -> Result<Value> {
     let key = state
-        .tmdb
-        .api_key
-        .as_deref()
+        .provider_key("tmdb")
         .ok_or_else(|| Error::bad("TMDb is not configured"))?;
     let url = format!(
         "{}/tv/{}?api_key={}&language={}",
         state.tmdb.api_base,
         path,
-        percent_encode(key),
+        percent_encode(&key),
         percent_encode(&state.tmdb.language)
     );
     let body = curl_text(&url).await.ok_or_else(|| {
@@ -833,11 +814,10 @@ pub async fn refresh(
     body: Option<Json<RefreshRequest>>,
 ) -> Result<Json<Value>> {
     auth.admin()?;
-    if !state.tmdb.enabled() {
+    if !state.provider_configured("tmdb") {
         return Err(Error(
             StatusCode::SERVICE_UNAVAILABLE,
-            "TMDb is not configured. Start the server with --tmdb-api-key to enable metadata."
-                .into(),
+            "TMDb is not configured. Add its API key in Administration → API keys.".into(),
         ));
     }
     let input = body.map(|Json(input)| input).unwrap_or_default();

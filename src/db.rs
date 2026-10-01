@@ -14,7 +14,7 @@ impl Database {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 9 {
+        if version > 10 {
             return Err(Error::internal(
                 "Database was created by a newer server version",
             ));

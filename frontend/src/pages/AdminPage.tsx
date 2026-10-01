@@ -4,14 +4,16 @@ import { ScanAdmin } from "./admin/ScanAdmin";
 import { UsersAdmin } from "./admin/UsersAdmin";
 import { RemoteServersAdmin } from "./admin/RemoteServersAdmin";
 import { ObjectStoresAdmin } from "./admin/ObjectStoresAdmin";
+import { ApiKeysAdmin } from "./admin/ApiKeysAdmin";
 
-type Tab = "libraries" | "remote" | "storage" | "users" | "scan";
+type Tab = "libraries" | "remote" | "storage" | "users" | "providers" | "scan";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "libraries", label: "Libraries" },
   { id: "remote", label: "Remote servers" },
   { id: "storage", label: "Object storage" },
   { id: "users", label: "Users" },
+  { id: "providers", label: "API keys" },
   { id: "scan", label: "Library scan" },
 ];
 
@@ -38,6 +40,7 @@ export function AdminPage() {
       {tab === "remote" && <RemoteServersAdmin />}
       {tab === "storage" && <ObjectStoresAdmin />}
       {tab === "users" && <UsersAdmin />}
+      {tab === "providers" && <ApiKeysAdmin />}
       {tab === "scan" && <ScanAdmin />}
     </section>
   );

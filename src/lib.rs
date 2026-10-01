@@ -8,6 +8,7 @@ pub mod object_storage;
 pub mod pairing;
 pub mod playback;
 pub mod playlists;
+pub mod providers;
 pub mod remote;
 pub mod scanner;
 pub mod subtitle_provider;
@@ -40,6 +41,7 @@ pub struct AppState {
     pub ffmpeg: String,
     pub data_dir: PathBuf,
     pub tmdb: tmdb::TmdbConfig,
+    pub provider_keys: Arc<std::sync::RwLock<providers::ProviderKeys>>,
     pub scan_gate: Arc<Semaphore>,
     pub transcode_gate: Arc<Semaphore>,
     pub subtitle_gate: Arc<Semaphore>,
@@ -54,6 +56,18 @@ pub struct AppState {
     pub object_uploads: object_storage::UploadSessions,
 }
 impl AppState {
+    pub fn provider_key(&self, provider: &str) -> Option<String> {
+        let keys = self.provider_keys.read().ok()?;
+        match provider {
+            "tmdb" => keys.tmdb.clone(),
+            "introdb" => keys.introdb.clone(),
+            "opensubtitles" => keys.opensubtitles.clone(),
+            _ => None,
+        }
+    }
+    pub fn provider_configured(&self, provider: &str) -> bool {
+        self.provider_key(provider).is_some()
+    }
     pub async fn new(
         db: Database,
         name: String,
@@ -84,6 +98,7 @@ impl AppState {
         } else {
             "ffmpeg".to_owned()
         };
+        let provider_keys = providers::ProviderKeys::load(&db, tmdb.api_key.clone()).await?;
         let transcode_sessions = transcode::TranscodeSessions::new(&data_dir);
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(8))
@@ -98,6 +113,7 @@ impl AppState {
             ffmpeg,
             data_dir,
             tmdb,
+            provider_keys: Arc::new(std::sync::RwLock::new(provider_keys)),
             scan_gate: Arc::new(Semaphore::new(1)),
             transcode_gate: Arc::new(Semaphore::new(2)),
             subtitle_gate: Arc::new(Semaphore::new(2)),
@@ -138,6 +154,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/Library/Paths", get(catalog::directories))
         .route("/Library/Refresh", post(scanner::refresh))
+        .route(
+            "/System/Providers",
+            get(providers::get).put(providers::update),
+        )
         .route("/RemoteServers", get(remote::list).post(remote::connect))
         .route(
             "/ObjectStores",
@@ -170,6 +190,7 @@ pub fn router(state: AppState) -> Router {
             get(catalog::adjacent_episodes),
         )
         .route("/Items/{id}/Metadata/Refresh", post(tmdb::refresh))
+        .route("/Items/{id}/Segments", get(providers::segments))
         .route("/Users/{user}/Items", get(catalog::user_items))
         .route("/Users/{user}/Items/{id}", get(catalog::user_item))
         .route("/Users/{user}/Items/Resume", get(catalog::resume))

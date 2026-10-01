@@ -44,7 +44,7 @@ impl Default for ScanStatus {
 pub async fn status(auth: Auth, State(state): State<AppState>) -> Result<Json<Vec<ScanStatus>>> {
     auth.admin()?;
     let mut status = state.scan_status.read().await.clone();
-    status.metadata_provider = if state.tmdb.enabled() {
+    status.metadata_provider = if state.provider_configured("tmdb") {
         "TMDb".into()
     } else {
         "Disabled".into()
@@ -258,7 +258,7 @@ async fn scan(state: &AppState) -> Result<()> {
             // scan when a key is configured. Items that already have data are
             // left untouched.
             let needs_metadata = matches!(item_type, "Movie" | "Episode")
-                && state.tmdb.enabled()
+                && state.provider_configured("tmdb")
                 && !matches!(previous, Some((_, _, _, _, Some(_))));
             let (parent, season, episode) = hierarchy
                 .clone()
@@ -279,7 +279,7 @@ async fn scan(state: &AppState) -> Result<()> {
                 Ok(c.query_row("SELECT id FROM items WHERE path=?1", [&insert_path], |r| r.get::<_,String>(0))?)
             }).await?;
             state.scan_status.write().await.scanned += 1;
-            if state.tmdb.enabled()
+            if state.provider_configured("tmdb")
                 && let Some((ref season, _, _)) = hierarchy
                 && let Err(error) = crate::tmdb::enrich_tv_parents(state, season).await
             {

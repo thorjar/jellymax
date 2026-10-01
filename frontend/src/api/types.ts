@@ -199,3 +199,20 @@ export interface NewObjectStore {
   SessionToken?: string;
   CollectionType: string;
 }
+
+export interface ProviderStatus {
+  TmdbConfigured: boolean;
+  IntroDbConfigured: boolean;
+  IntroDbPublicLookups: boolean;
+  OpenSubtitlesConfigured: boolean;
+}
+
+export interface MediaSegment {
+  StartTicks: number;
+  EndTicks: number;
+}
+
+export interface MediaSegments {
+  Intro: MediaSegment[];
+  Source: string;
+}

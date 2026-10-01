@@ -34,16 +34,13 @@ fn api_base() -> String {
     API.into()
 }
 
-fn api_key() -> Result<String> {
-    std::env::var("JELLYMAX_OPENSUBTITLES_API_KEY")
-        .ok()
-        .filter(|key| !key.trim().is_empty())
-        .ok_or_else(|| {
-            Error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "OpenSubtitles is not configured on this server".into(),
-            )
-        })
+fn api_key(state: &AppState) -> Result<String> {
+    state.provider_key("opensubtitles").ok_or_else(|| {
+        Error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "OpenSubtitles is not configured. Add its API key in Administration → API keys.".into(),
+        )
+    })
 }
 
 async fn provider_error(stage: &str, response: reqwest::Response) -> Error {
@@ -100,7 +97,7 @@ pub async fn search(
     Path(item): Path<String>,
     Query(input): Query<SearchQuery>,
 ) -> Result<Json<Value>> {
-    let key = api_key()?;
+    let key = api_key(&state)?;
     let language = input
         .language
         .unwrap_or_else(|| "en".into())
@@ -198,7 +195,7 @@ pub async fn download(
     Path(item): Path<String>,
     Json(input): Json<DownloadInput>,
 ) -> Result<Json<Value>> {
-    let key = api_key()?;
+    let key = api_key(&state)?;
     if input.file_id == 0 {
         return Err(Error::bad("Invalid subtitle file"));
     }

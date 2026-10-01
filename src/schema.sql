@@ -71,4 +71,8 @@ CREATE TABLE IF NOT EXISTS pairings(
     created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pairings_expiry ON pairings(expires_at);
-PRAGMA user_version = 9;
+CREATE TABLE IF NOT EXISTS media_segments(
+    item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+    payload TEXT NOT NULL, fetched_at INTEGER NOT NULL
+);
+PRAGMA user_version = 10;

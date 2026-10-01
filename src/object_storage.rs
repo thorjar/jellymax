@@ -705,7 +705,7 @@ async fn sync_store(state: &AppState, store_id: String) -> Result<usize> {
         if needs_probe {
             probe_object(state, &item_id).await;
         }
-        if needs_metadata && state.tmdb.enabled() {
+        if needs_metadata && state.provider_configured("tmdb") {
             if let Some((ref season_id, _, _)) = hierarchy {
                 let _ = crate::tmdb::enrich_tv_parents(state, season_id).await;
             }
