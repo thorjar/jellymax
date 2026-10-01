@@ -20,8 +20,8 @@ Name: "{group}\Open Jellymax"; Filename: "http://localhost:8097"
 Name: "{commondesktop}\Jellymax"; Filename: "http://localhost:8097"
 
 [Run]
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install-service.ps1"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""& '{app}\install-service.ps1'"""; Flags: runhidden waituntilterminated logoutput
 Filename: "http://localhost:8097"; Flags: shellexec postinstall skipifsilent
 
 [UninstallRun]
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\uninstall-service.ps1"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""& '{app}\uninstall-service.ps1'"""; Flags: runhidden waituntilterminated logoutput; RunOnceId: "RemoveJellymaxService"
