@@ -72,7 +72,8 @@ jobs:
           Copy-Item packaging/windows/*.ps1 stage/windows/
           $ffmpeg = Get-ChildItem C:\ProgramData\chocolatey\lib\ffmpeg\tools -Filter ffmpeg.exe -Recurse | Select-Object -First 1
           $ffprobe = Get-ChildItem C:\ProgramData\chocolatey\lib\ffmpeg\tools -Filter ffprobe.exe -Recurse | Select-Object -First 1
-          $nssm = Get-ChildItem C:\ProgramData\chocolatey\lib\nssm\tools -Filter nssm.exe -Recurse | Where-Object FullName -Match win64 | Select-Object -First 1
+          $nssm = Get-ChildItem C:\ProgramData\chocolatey\lib -Filter nssm.exe -Recurse | Where-Object Length -GT 100000 | Sort-Object Length -Descending | Select-Object -First 1
+          if (-not $ffmpeg -or -not $ffprobe -or -not $nssm) { throw "Required packaging binary was not found" }
           Copy-Item $ffmpeg.FullName stage/windows/ffmpeg.exe
           Copy-Item $ffprobe.FullName stage/windows/ffprobe.exe
           Copy-Item $nssm.FullName stage/windows/nssm.exe
