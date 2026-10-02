@@ -740,9 +740,11 @@ async fn item_lineage(state: &AppState, item: &str) -> Result<Option<(String, Op
     state
         .db
         .call(move |c| {
-            Ok(c.query_row("SELECT kind,parent_id FROM items WHERE id=?1", [item], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-            })
+            Ok(c.query_row(
+                "SELECT kind,parent_id FROM items WHERE id=?1",
+                [item],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
             .optional()?)
         })
         .await
@@ -776,7 +778,10 @@ pub(crate) async fn image(
             .map(Some)
             .map_err(Error::internal);
     }
-    let mut url = endpoint(&server, &format!("Items/{remote}/Images/{}", artwork.remote_type()))?;
+    let mut url = endpoint(
+        &server,
+        &format!("Items/{remote}/Images/{}", artwork.remote_type()),
+    )?;
     url.query_pairs_mut()
         .append_pair("MaxWidth", "1200")
         .append_pair("Quality", "95")

@@ -267,7 +267,11 @@ pub async fn backdrop_path(state: &AppState, path: &str) -> Option<String> {
 
 /// Download a TMDb backdrop at landscape-friendly resolution. Mirrors
 /// `download_poster` but swaps the configured poster size for `w780`.
-pub async fn download_backdrop(state: &AppState, backdrop_path: &str, destination: &FsPath) -> bool {
+pub async fn download_backdrop(
+    state: &AppState,
+    backdrop_path: &str,
+    destination: &FsPath,
+) -> bool {
     if !backdrop_path.starts_with('/') || backdrop_path.contains("..") {
         return false;
     }

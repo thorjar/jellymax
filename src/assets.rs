@@ -36,7 +36,9 @@ pub async fn image(
     Path(item): Path<String>,
     request: Request,
 ) -> Result<Response> {
-    if let Some(response) = crate::remote::image(&state, &item, crate::remote::Artwork::Primary).await? {
+    if let Some(response) =
+        crate::remote::image(&state, &item, crate::remote::Artwork::Primary).await?
+    {
         return Ok(response);
     }
     // Confirm existence before constructing a server-owned artwork path.
@@ -139,7 +141,11 @@ pub async fn backdrop_image(
             }
         })
         .await?;
-    if let Some(tmdb_id) = tmdb_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+    if let Some(tmdb_id) = tmdb_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
         let details = if kind == "Series" {
             format!("tv/{tmdb_id}")
         } else {
