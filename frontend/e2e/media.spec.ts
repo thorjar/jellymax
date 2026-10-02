@@ -32,9 +32,12 @@ test("fullscreen controls return when Chromium reports pointer movement", async 
   await page.getByRole("link", { name: "▶ Play", exact: true }).click();
   const video = page.locator("video");
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.readyState)).toBeGreaterThanOrEqual(2);
+  const controls = page.getByLabel("Seek playback").locator("..");
+  await expect(controls).toHaveClass(/relative/);
+  await expect(controls).not.toHaveClass(/absolute/);
   await page.getByRole("button", { name: "Fullscreen", exact: true }).click();
   await expect.poll(() => page.evaluate(() => document.fullscreenElement?.tagName)).toBe("DIV");
-  const controls = page.getByLabel("Seek playback").locator("..");
+  await expect(controls).toHaveClass(/absolute/);
   await page.waitForTimeout(3_800);
   await expect(controls).toHaveClass(/opacity-0/);
   await page.mouse.move(120, 120);
