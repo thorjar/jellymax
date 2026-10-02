@@ -190,6 +190,8 @@ pub fn router(state: AppState) -> Router {
             get(catalog::adjacent_episodes),
         )
         .route("/Items/{id}/Metadata/Refresh", post(tmdb::refresh))
+        .route("/Items/{id}/Metadata/Matches", post(tmdb::matches))
+        .route("/Items/{id}/Metadata/Apply", post(tmdb::apply_match))
         .route("/Items/{id}/Segments", get(providers::segments))
         .route("/Users/{user}/Items", get(catalog::user_items))
         .route("/Users/{user}/Items/{id}", get(catalog::user_item))

@@ -17,6 +17,7 @@ import type {
   NewObjectStore,
   ProviderStatus,
   MediaSegments,
+  MetadataMatch,
 } from "./types";
 
 const TOKEN_KEY = "jellymax_token";
@@ -270,6 +271,14 @@ export const api = {
       { method: "POST", body: JSON.stringify(body) },
     );
   },
+  metadataMatches: (id: string, name?: string, year?: number) =>
+    request<{ Items: MetadataMatch[]; Query: string; Year?: number | null }>(`/Items/${encodeURIComponent(id)}/Metadata/Matches`, {
+      method: "POST", body: JSON.stringify({ Name: name, Year: year }),
+    }),
+  applyMetadataMatch: (id: string, tmdbId: number) =>
+    request<{ Applied: boolean; ItemId: string }>(`/Items/${encodeURIComponent(id)}/Metadata/Apply`, {
+      method: "POST", body: JSON.stringify({ TmdbId: tmdbId }),
+    }),
 
   // Items
   getItems: (params: ItemQuery = {}) => {

@@ -6,6 +6,7 @@ import { useAuth } from "../auth/AuthContext";
 import { EpisodeNavigation } from "../components/EpisodeNavigation";
 import { ItemGrid } from "../components/ItemGrid";
 import { ItemImage } from "../components/ItemImage";
+import { MetadataMatchDialog } from "../components/MetadataMatchDialog";
 import { Spinner } from "../components/Spinner";
 import { StreamsTable } from "../components/StreamsTable";
 import { ICONS, Icon } from "../components/icons";
@@ -21,6 +22,7 @@ export function ItemDetailPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [editingMetadata, setEditingMetadata] = useState(false);
   const [children, setChildren] = useState<Item[]>([]);
   const [childTotal, setChildTotal] = useState(0);
   const [childPage, setChildPage] = useState(0);
@@ -127,16 +129,21 @@ export function ItemDetailPage() {
     }
   }
 
+  async function reloadItem() {
+    if (!item) return;
+    const fresh = await api.getItem(item.Id);
+    setItem(fresh);
+    writeCatalogCache(`item:${item.Id}`, fresh);
+    setImageRevision((value) => value + 1);
+  }
+
   async function refreshMetadata() {
     if (!item) return;
     setRefreshing(true);
     setNotice(null);
     try {
       const result = await api.refreshMetadata(item.Id);
-      const fresh = await api.getItem(item.Id);
-      setItem(fresh);
-      writeCatalogCache(`item:${item.Id}`, fresh);
-      setImageRevision((value) => value + 1);
+      await reloadItem();
       setNotice(
         result.Matched
           ? "TMDb metadata updated."
@@ -244,10 +251,15 @@ export function ItemDetailPage() {
               {!item.IsFolder && <button type="button" className="btn" onClick={togglePlayed}>
                 {isPlayed ? "Mark unplayed" : "Mark played"}
               </button>}
-              {isAdmin && ["Movie", "Series", "Season", "Episode"].includes(item.Type) && (
+              {isAdmin && item.Type === "Movie" && !item.IsRemote && (
+                <button type="button" className="btn" onClick={() => setEditingMetadata(true)}>
+                  Edit metadata
+                </button>
+              )}
+              {isAdmin && ["Series", "Season", "Episode"].includes(item.Type) && (
                 <button type="button" className="btn" onClick={refreshMetadata}
                   disabled={refreshing}>
-                  {refreshing ? "Refreshing…" : "↻ Refresh metadata"}
+                  {refreshing ? "Refreshing..." : "Refresh metadata"}
                 </button>
               )}
               {!item.IsFolder && playlists.length > 0 && (
@@ -276,6 +288,15 @@ export function ItemDetailPage() {
           </div>
         </div>
       </div>
+
+      {editingMetadata && (
+        <MetadataMatchDialog itemId={item.Id} initialName={item.Name} initialYear={item.Year}
+          onClose={() => setEditingMetadata(false)}
+          onApplied={async () => {
+            await reloadItem();
+            setNotice("TMDB metadata updated.");
+          }} />
+      )}
 
       {item.IsFolder ? <section className="mt-6" aria-label={item.Type === "Series" ? "Seasons" : "Episodes"}>
         <h2 className="mb-4 text-xl font-semibold">{item.Type === "Series" ? "Seasons" : "Episodes"}</h2>

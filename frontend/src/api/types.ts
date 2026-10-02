@@ -96,6 +96,15 @@ export interface Item {
   CommunityRating?: number | null;
 }
 
+export interface MetadataMatch {
+  TmdbId: number;
+  Title: string;
+  Year?: number | null;
+  Overview?: string | null;
+  CommunityRating?: number | null;
+  PosterUrl?: string | null;
+}
+
 export interface MediaSource {
   Id: string;
   Protocol: string;

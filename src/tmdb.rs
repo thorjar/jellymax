@@ -16,7 +16,7 @@ use axum::{
     http::StatusCode,
 };
 use rusqlite::{OptionalExtension, params};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{path::Path as FsPath, time::Duration};
 use tokio::{io::AsyncReadExt, process::Command, sync::Mutex};
@@ -73,6 +73,31 @@ impl SearchHit {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct MetadataMatch {
+    tmdb_id: i64,
+    title: String,
+    year: Option<i64>,
+    overview: Option<String>,
+    community_rating: Option<f64>,
+    poster_url: Option<String>,
+}
+
+fn public_match(state: &AppState, hit: &SearchHit) -> MetadataMatch {
+    MetadataMatch {
+        tmdb_id: hit.id,
+        title: hit.title.clone(),
+        year: hit.release_year(),
+        overview: hit.overview.clone(),
+        community_rating: hit.rating,
+        poster_url: hit
+            .poster_path
+            .as_ref()
+            .map(|path| format!("{}{path}", state.tmdb.image_base)),
+    }
+}
+
 /// Query TMDb for a movie. `Ok(vec![])` means "no match"; `Err` means the
 /// request itself failed (network, non-2xx, malformed body) so callers can
 /// tell the difference.
@@ -101,6 +126,49 @@ pub async fn search(state: &AppState, query: &str, year: Option<i64>) -> Result<
             StatusCode::BAD_GATEWAY,
             "TMDb search response was malformed".into(),
         )
+    })
+}
+
+async fn movie_by_id(state: &AppState, id: i64) -> Result<SearchHit> {
+    let key = state
+        .provider_key("tmdb")
+        .ok_or_else(|| Error::internal("TMDb is not configured"))?;
+    let url = format!(
+        "{}/movie/{id}?api_key={}&language={}",
+        state.tmdb.api_base,
+        percent_encode(&key),
+        percent_encode(&state.tmdb.language)
+    );
+    let body = curl_text(&url)
+        .await
+        .ok_or_else(|| Error(StatusCode::BAD_GATEWAY, "TMDb movie request failed".into()))?;
+    let data: Value = serde_json::from_str(&body).map_err(|_| {
+        Error(
+            StatusCode::BAD_GATEWAY,
+            "TMDb movie response was malformed".into(),
+        )
+    })?;
+    Ok(SearchHit {
+        id: data["id"]
+            .as_i64()
+            .ok_or_else(|| Error::bad("The selected TMDb movie was not found"))?,
+        title: non_empty(&data["title"])
+            .ok_or_else(|| Error::bad("The selected TMDb movie has no title"))?,
+        release_date: non_empty(&data["release_date"]),
+        overview: non_empty(&data["overview"]),
+        poster_path: non_empty(&data["poster_path"]),
+        rating: data["vote_average"]
+            .as_f64()
+            .filter(|rating| rating.is_finite() && *rating > 0.0),
+        genre_ids: data["genres"]
+            .as_array()
+            .map(|genres| {
+                genres
+                    .iter()
+                    .filter_map(|genre| genre["id"].as_i64())
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -752,6 +820,15 @@ async fn match_and_apply(
         tracing::info!(item = %item_id, title = %title, "No TMDb match found");
         return Ok(false);
     };
+    apply_movie_hit(state, item_id, &hit, year_override.or(filename_year)).await
+}
+
+async fn apply_movie_hit(
+    state: &AppState,
+    item_id: &str,
+    hit: &SearchHit,
+    fallback_year: Option<i64>,
+) -> Result<bool> {
     let genre_names = genre_map(state)
         .await
         .into_iter()
@@ -759,7 +836,7 @@ async fn match_and_apply(
         .map(|(_, name)| name)
         .collect::<Vec<_>>();
     let genres = serde_json::to_string(&genre_names).unwrap_or_else(|_| "[]".to_owned());
-    let year = hit.release_year().or(year_override).or(filename_year);
+    let year = hit.release_year().or(fallback_year);
     let tmdb_id = hit.id.to_string();
     let overview = hit.overview.clone();
     let rating = hit.rating;
@@ -792,6 +869,88 @@ async fn match_and_apply(
     }
     tracing::info!(item = %item_id, tmdb = %hit.id, title = %hit.title, "TMDb metadata stored");
     Ok(true)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct MatchRequest {
+    pub name: Option<String>,
+    pub year: Option<i64>,
+}
+
+async fn local_movie(state: &AppState, item_id: &str) -> Result<String> {
+    state
+        .db
+        .call({
+            let item_id = item_id.to_owned();
+            move |c| {
+                let path = c
+                    .query_row(
+                        "SELECT path FROM items WHERE id=?1 AND kind='Movie' AND remote_server_id IS NULL",
+                        [item_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                path.ok_or_else(Error::missing)
+            }
+        })
+        .await
+}
+
+pub async fn matches(
+    auth: Auth,
+    State(state): State<AppState>,
+    Path(item_id): Path<String>,
+    body: Option<Json<MatchRequest>>,
+) -> Result<Json<Value>> {
+    auth.admin()?;
+    if !state.provider_configured("tmdb") {
+        return Err(Error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "TMDb is not configured. Add its API key in Administration -> API keys.".into(),
+        ));
+    }
+    let path = local_movie(&state, &item_id).await?;
+    let input = body.map(|Json(value)| value).unwrap_or_default();
+    let stem = FsPath::new(&path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(&path);
+    let (parsed_title, parsed_year) = media_title(stem);
+    let query = input
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&parsed_title);
+    let hits = search(&state, query, input.year.or(parsed_year)).await?;
+    let matches = hits
+        .iter()
+        .take(20)
+        .map(|hit| public_match(&state, hit))
+        .collect::<Vec<_>>();
+    Ok(Json(
+        json!({ "Items": matches, "Query": query, "Year": input.year.or(parsed_year) }),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ApplyMatchRequest {
+    pub tmdb_id: i64,
+}
+
+pub async fn apply_match(
+    auth: Auth,
+    State(state): State<AppState>,
+    Path(item_id): Path<String>,
+    Json(input): Json<ApplyMatchRequest>,
+) -> Result<Json<Value>> {
+    auth.admin()?;
+    local_movie(&state, &item_id).await?;
+    let hit = movie_by_id(&state, input.tmdb_id).await?;
+    apply_movie_hit(&state, &item_id, &hit, None).await?;
+    Ok(Json(json!({"Applied":true,"ItemId":item_id})))
 }
 
 #[derive(Deserialize, Default)]
