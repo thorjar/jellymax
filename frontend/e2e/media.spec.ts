@@ -27,6 +27,7 @@ test("movies show stored metadata and play through a scoped ticket", async ({ pa
 });
 
 test("fullscreen controls return when Chromium reports pointer movement", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
   await page.getByRole("navigation", { name: "Jellymax libraries" }).getByRole("link", { name: "Movies" }).click();
   await page.getByRole("link", { name: /Windowed Subtitles/ }).click();
   await page.getByRole("link", { name: "▶ Play", exact: true }).click();
@@ -37,10 +38,13 @@ test("fullscreen controls return when Chromium reports pointer movement", async 
   await expect(controls).not.toHaveClass(/absolute/);
   await page.getByRole("button", { name: "Fullscreen", exact: true }).click();
   await expect.poll(() => page.evaluate(() => document.fullscreenElement?.tagName)).toBe("DIV");
+  const frame = video.locator("..");
+  await expect(frame).toHaveClass(/h-screen/);
+  await expect.poll(async () => Math.round((await frame.boundingBox())?.height ?? 0)).toBe(800);
   await expect(controls).toHaveClass(/absolute/);
   await page.waitForTimeout(3_800);
   await expect(controls).toHaveClass(/opacity-0/);
-  await page.mouse.move(120, 120);
+  await page.mouse.move(640, 790);
   await expect(controls).toHaveClass(/opacity-100/);
 });
 

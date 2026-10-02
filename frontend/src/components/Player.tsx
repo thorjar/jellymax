@@ -610,14 +610,14 @@ export function Player({ item }: PlayerProps) {
   return <div className={`mx-auto ${isAudio ? "max-w-2xl" : "max-w-4xl"}`}>
     {isAudio ? <audio {...commonProps} ref={mediaRef as RefObject<HTMLAudioElement>}
       className="w-full rounded-xl border border-edge bg-surface-raised p-3" />
-      : <div ref={frameRef} className={`group relative overflow-hidden bg-black ${fullscreen ? "rounded-none border-0 shadow-none" : "rounded-xl border border-edge shadow-lg"} ${fullscreen && !playerControlsShown ? "cursor-none" : ""}`}
+      : <div ref={frameRef} className={`group relative overflow-hidden bg-black ${fullscreen ? "h-screen w-screen rounded-none border-0 shadow-none" : "rounded-xl border border-edge shadow-lg"} ${fullscreen && !playerControlsShown ? "cursor-none" : ""}`}
           onPointerMove={revealControls} onMouseMove={revealControls}
           onMouseLeave={() => {
             if (!fullscreen && playing && !subtitleMenuOpen && !audioMenuOpen) setControlsVisible(false);
           }}
           onFocusCapture={revealControls} onContextMenu={(event) => event.preventDefault()}>
           <video {...commonProps} ref={mediaRef as RefObject<HTMLVideoElement>}
-            className={`aspect-video w-full bg-black object-contain ${fullscreen && !playerControlsShown ? "cursor-none" : "cursor-pointer"}`} playsInline
+            className={`${fullscreen ? "h-full w-full" : "aspect-video w-full"} bg-black object-contain ${fullscreen && !playerControlsShown ? "cursor-none" : "cursor-pointer"}`} playsInline
             onClick={togglePlayback}>
             {subtitleUrl && <track ref={subtitleTrackRef} key={selectedSubtitle} kind="subtitles" src={subtitleUrl}
               srcLang={typeof selectedSubtitle === "string"
@@ -626,6 +626,10 @@ export function Player({ item }: PlayerProps) {
               label="Selected subtitles" onLoad={() => setSubtitleTrackVersion((version) => version + 1)}
               onError={() => setSubtitleError("The browser could not read this subtitle track. Choose it to retry.")} />}
           </video>
+          {fullscreen && <div aria-hidden="true"
+            className={`absolute inset-0 z-10 ${playerControlsShown ? "cursor-default" : "cursor-none"}`}
+            onPointerMove={revealControls} onMouseMove={revealControls}
+            onPointerDown={revealControls} onClick={togglePlayback} />}
           {playbackNotice && <div className="pointer-events-none absolute inset-x-4 top-4 z-20 flex justify-center" role="status">
             <span className="rounded-md bg-black/80 px-3 py-2 text-sm text-white">{playbackNotice}</span>
           </div>}
