@@ -179,7 +179,7 @@ export function ItemDetailPage() {
         <div className="flex flex-col gap-6 p-6 sm:flex-row">
           <div className={item.Type === "Episode" ? "w-full shrink-0 sm:w-80 lg:w-[28rem]" : "w-40 shrink-0 sm:w-48"}>
             <div className={`${item.Type === "Episode" ? "aspect-video" : "aspect-[2/3]"} overflow-hidden rounded-xl border border-edge shadow-lg shadow-black/30`}>
-              <ItemImage itemId={item.Id} name={item.Name} revision={imageRevision} className="h-full w-full" />
+              <ItemImage itemId={item.Id} name={item.Name} revision={`${item.TmdbId ?? "local"}-${imageRevision}`} className="h-full w-full" />
             </div>
           </div>
           <div className="min-w-0 flex-1">

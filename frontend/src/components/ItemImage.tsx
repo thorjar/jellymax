@@ -5,7 +5,7 @@ interface ItemImageProps {
   itemId: string;
   name: string;
   className?: string;
-  revision?: number;
+  revision?: string | number;
 }
 
 // The artwork endpoint requires the X-Emby-Token header, which an <img> tag

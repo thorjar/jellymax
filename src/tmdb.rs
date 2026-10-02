@@ -241,10 +241,30 @@ pub async fn download_poster(state: &AppState, poster_path: &str, destination: &
         return false;
     };
     let ok = matches!(child.wait().await, Ok(status) if status.success());
-    if ok && tokio::fs::rename(&temporary, destination).await.is_ok() {
+    if ok && replace_download(&temporary, destination).await {
         return true;
     }
     tokio::fs::remove_file(&temporary).await.ok();
+    false
+}
+
+async fn replace_download(temporary: &FsPath, destination: &FsPath) -> bool {
+    if tokio::fs::rename(temporary, destination).await.is_ok() {
+        return true;
+    }
+    if !destination.exists() {
+        return false;
+    }
+    let backup = destination.with_extension(format!("{}.bak", crate::auth::id()));
+    if tokio::fs::rename(destination, &backup).await.is_err() {
+        return false;
+    }
+    if tokio::fs::rename(temporary, destination).await.is_ok() {
+        tokio::fs::remove_file(backup).await.ok();
+        return true;
+    }
+    // Preserve the previous poster when publishing the new download fails.
+    let _ = tokio::fs::rename(backup, destination).await;
     false
 }
 
@@ -1109,6 +1129,19 @@ fn parse_genres(body: &str) -> Option<GenreMap> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn downloaded_poster_replaces_an_existing_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("poster.jpg");
+        let temporary = directory.path().join("poster.tmp");
+        tokio::fs::write(&destination, b"old").await.unwrap();
+        tokio::fs::write(&temporary, b"new").await.unwrap();
+
+        assert!(replace_download(&temporary, &destination).await);
+        assert_eq!(tokio::fs::read(&destination).await.unwrap(), b"new");
+        assert!(!temporary.exists());
+    }
 
     #[test]
     fn splits_titles_with_parenthesised_years() {
