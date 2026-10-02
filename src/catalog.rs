@@ -304,6 +304,62 @@ pub async fn resume(
     query_items(auth, state, query, true).await
 }
 
+/// The first unplayed episode after each series' most recently completed
+/// episode, ordered by the user's latest series activity.
+pub async fn next_up(
+    auth: Auth,
+    State(state): State<AppState>,
+    Path(user): Path<String>,
+    Query(query): Query<ItemQuery>,
+) -> Result<Json<Value>> {
+    auth.own(&user)?;
+    let user_id = auth.user.id;
+    let limit = query.limit.unwrap_or(10).clamp(1, 50);
+    state.db.call(move |connection| {
+        let sql = format!(r#"WITH played_ranked AS (
+            SELECT season.parent_id AS series_id,
+                   COALESCE(episode.parent_index_number,0) AS season_number,
+                   COALESCE(episode.index_number,0) AS episode_number,
+                   progress.updated_at,
+                   row_number() OVER (
+                     PARTITION BY season.parent_id
+                     ORDER BY progress.updated_at DESC,COALESCE(episode.parent_index_number,0) DESC,
+                              COALESCE(episode.index_number,0) DESC,episode.id DESC
+                   ) AS recent_rank
+            FROM user_data progress
+            JOIN items episode ON episode.id=progress.item_id AND episode.kind='Episode'
+            JOIN items season ON season.id=episode.parent_id AND season.kind='Season'
+            WHERE progress.user_id=?1 AND progress.played=1
+        ), next_episodes AS (
+            SELECT played.series_id,played.updated_at,
+                   (SELECT candidate.id
+                    FROM items candidate
+                    JOIN items candidate_season ON candidate_season.id=candidate.parent_id
+                    LEFT JOIN user_data candidate_progress
+                      ON candidate_progress.item_id=candidate.id AND candidate_progress.user_id=?1
+                    WHERE candidate.kind='Episode' AND candidate_season.parent_id=played.series_id
+                      AND COALESCE(candidate_progress.played,0)=0
+                      AND (COALESCE(candidate.parent_index_number,0)>played.season_number OR
+                          (COALESCE(candidate.parent_index_number,0)=played.season_number AND
+                           COALESCE(candidate.index_number,0)>played.episode_number))
+                    ORDER BY COALESCE(candidate.parent_index_number,0),COALESCE(candidate.index_number,0),candidate.id
+                    LIMIT 1) AS item_id
+            FROM played_ranked played WHERE played.recent_rank=1
+        )
+        SELECT {ITEM_COLUMNS}
+        FROM next_episodes next
+        JOIN items i ON i.id=next.item_id
+        LEFT JOIN user_data u ON u.item_id=i.id AND u.user_id=?1
+        ORDER BY next.updated_at DESC,i.id
+        LIMIT ?2"#);
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(params![user_id, limit], item_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let count = rows.len();
+        Ok(Json(json!({"Items":rows,"TotalRecordCount":count,"StartIndex":0})))
+    }).await
+}
+
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct RecommendationQuery {

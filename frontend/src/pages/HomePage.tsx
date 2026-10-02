@@ -10,7 +10,7 @@ import { useAuth } from "../auth/AuthContext";
 import { FAVORITES_CHANGED_EVENT } from "../lib/favoriteEvents";
 
 interface RowData { library: Library; items: Item[]; }
-interface HomeData { resume: Item[]; favorites: Item[]; recommended: Item[]; recent: Item[]; rows: RowData[]; }
+interface HomeData { resume: Item[]; nextUp: Item[]; favorites: Item[]; recommended: Item[]; recent: Item[]; rows: RowData[]; }
 
 function MediaRow({ title, items, href, onRemove }: { title: string; items: Item[]; href?: string; onRemove?: (itemId: string) => void }) {
   const rail = useRef<HTMLDivElement>(null);
@@ -31,6 +31,7 @@ export function HomePage() {
   const { user } = useAuth();
   const cached = readCatalogCache<HomeData>("home");
   const [resume, setResume] = useState<Item[]>(cached?.resume ?? []);
+  const [nextUp, setNextUp] = useState<Item[]>(cached?.nextUp ?? []);
   const [favorites, setFavorites] = useState<Item[]>(cached?.favorites ?? []);
   const [recommended, setRecommended] = useState<Item[]>(cached?.recommended ?? []);
   const [recent, setRecent] = useState<Item[]>(cached?.recent ?? []);
@@ -40,16 +41,16 @@ export function HomePage() {
   useEffect(()=>{if(!user)return;let cancelled=false;(async()=>{try{
     // Recommendations enhance the home page but must not make the entire
     // catalog unavailable while an older backend is being restarted/upgraded.
-    const [libraries, resumeResult, favoriteResult, recommendationGroups]=await Promise.all([api.libraries(),api.resume(user.Id,10),api.getItems({IsFavorite:true,Limit:10}),api.recommendations(user.Id,10).catch(()=>[])]);
+    const [libraries, resumeResult, nextUpResult, favoriteResult, recommendationGroups]=await Promise.all([api.libraries(),api.resume(user.Id,10),api.nextUp(user.Id,10),api.getItems({IsFavorite:true,Limit:10}),api.recommendations(user.Id,10).catch(()=>[])]);
     const [latest,...libraryResults]=await Promise.all([api.getItems({Recursive:true,IncludeItemTypes:"Movie,Series,Audio,Video",SortBy:"DateCreated",Limit:10}),...libraries.map(library=>api.getItems({ParentId:library.ItemId,Limit:10}))]);
     if(cancelled)return;
     const nextRows=libraries.map((library,index)=>({library,items:libraryResults[index].Items}));
     const nextRecommended=recommendationGroups.flatMap(group=>group.Items).slice(0,10);
-    const nextData={resume:resumeResult.Items,favorites:favoriteResult.Items,recommended:nextRecommended,recent:latest.Items,rows:nextRows};
-    setResume(nextData.resume);setFavorites(nextData.favorites);setRecommended(nextData.recommended);setRecent(nextData.recent);setRows(nextRows);writeCatalogCache("home",nextData);setError(null);
+    const nextData={resume:resumeResult.Items,nextUp:nextUpResult.Items,favorites:favoriteResult.Items,recommended:nextRecommended,recent:latest.Items,rows:nextRows};
+    setResume(nextData.resume);setNextUp(nextData.nextUp);setFavorites(nextData.favorites);setRecommended(nextData.recommended);setRecent(nextData.recent);setRows(nextRows);writeCatalogCache("home",nextData);setError(null);
   }catch(e){if(!cancelled)setError(e instanceof Error?e.message:String(e));}finally{if(!cancelled)setLoading(false);}})();return()=>{cancelled=true};},[user]);
   useEffect(()=>{if(!user)return;const refresh=()=>{void api.getItems({IsFavorite:true,Limit:10}).then(data=>setFavorites(data.Items)).catch(()=>{})};window.addEventListener(FAVORITES_CHANGED_EVENT,refresh);return()=>window.removeEventListener(FAVORITES_CHANGED_EVENT,refresh)},[user]);
   if(loading)return <Spinner label="Building your home screen…"/>;
   if(error&&rows.length===0)return <div className="rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">Could not load home: {error}</div>;
-  return <div className="space-y-10 pb-8"><header><p className="mb-1 text-sm font-semibold uppercase tracking-[0.18em] text-brand-strong">Browse</p><h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">What will you watch?</h1></header><MediaRow title="Continue watching" items={resume} href="/resume" onRemove={itemId=>setResume(items=>items.filter(item=>item.Id!==itemId))}/><MediaRow title="Favorites" items={favorites} href="/favorites"/><MediaRow title="Recommended for you" items={recommended}/><MediaRow title="Recently added" items={recent}/>{rows.map(({library,items})=><MediaRow key={library.ItemId} title={library.IsRemote&&library.RemoteServerName?`${library.Name} · ${library.RemoteServerName}`:library.Name} items={items} href={`/library/${library.ItemId}`}/>)}{rows.length===0&&<div className="rounded-xl border border-dashed border-edge py-16 text-center text-sm text-ink-muted">No libraries yet. Add one from Administration.</div>}</div>;
+  return <div className="space-y-10 pb-8"><header><p className="mb-1 text-sm font-semibold uppercase tracking-[0.18em] text-brand-strong">Browse</p><h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">What will you watch?</h1></header><MediaRow title="Continue watching" items={resume} href="/resume" onRemove={itemId=>setResume(items=>items.filter(item=>item.Id!==itemId))}/><MediaRow title="Next Up" items={nextUp}/><MediaRow title="Favorites" items={favorites} href="/favorites"/><MediaRow title="Recommended for you" items={recommended}/><MediaRow title="Recently added" items={recent}/>{rows.map(({library,items})=><MediaRow key={library.ItemId} title={library.IsRemote&&library.RemoteServerName?`${library.Name} · ${library.RemoteServerName}`:library.Name} items={items} href={`/library/${library.ItemId}`}/>)}{rows.length===0&&<div className="rounded-xl border border-dashed border-edge py-16 text-center text-sm text-ink-muted">No libraries yet. Add one from Administration.</div>}</div>;
 }

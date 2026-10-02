@@ -9,7 +9,7 @@ The objective is approximately 90% of the useful non-live-TV behavior, not 90% o
 | Libraries | Working local create/list/remove plus imported libraries from existing Jellyfin servers | Multiple local roots, access policies, filesystem watcher, scheduled refresh |
 | Scanning | Working recursive scan, stable IDs, incremental probing, conservative pruning | Rename detection, richer naming rules, job cancellation, durable status |
 | Movies and home videos | Flat catalog and file-derived names | Metadata providers, NFO, year and version grouping, collections, trailers |
-| Television series | Video files classified as Episode | Series/season hierarchy, episode parsing, next-up, specials, multi-episode files |
+| Television series | Series/season hierarchy, episode parsing and navigation, Next Up from completed episodes, optional TheIntroDB Skip Intro | Specials, multi-episode files, local intro detection |
 | Music | Audio scanning and direct streaming | Tags, artists, albums, discs, genres, lyrics, instant mixes |
 | Browsing | Detail, search, filters, pagination | Full Jellyfin query model, sorting, recommendations, full-text indexes |
 | Artwork | Local primary images | Remote providers, resizing, backdrops, embedded artwork, image caching |

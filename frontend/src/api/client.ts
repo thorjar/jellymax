@@ -288,6 +288,8 @@ export const api = {
     const suffix = limit ? `?Limit=${limit}` : "";
     return request<ItemList>(`/Users/${encodeURIComponent(userId)}/Items/Resume${suffix}`);
   },
+  nextUp: (userId: string, limit = 10) =>
+    request<ItemList>(`/Users/${encodeURIComponent(userId)}/Items/NextUp?Limit=${limit}`),
   recommendations: (userId: string, itemLimit = 10) =>
     request<Recommendation[]>(`/Recommendations?UserId=${encodeURIComponent(userId)}&ItemLimit=${itemLimit}`),
 

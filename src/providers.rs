@@ -227,18 +227,22 @@ pub async fn segments(
     } else {
         INTRODB_API.into()
     };
-    let mut request = state.http.get(format!("{base}/media")).query(&[
-        ("tmdb_id", tmdb_id),
-        ("season", season.to_string()),
-        ("episode", episode.to_string()),
-        (
-            "duration_ms",
-            duration_ticks
-                .unwrap_or(0)
-                .saturating_div(10_000)
-                .to_string(),
-        ),
-    ]);
+    let mut request = state
+        .http
+        .get(format!("{base}/media"))
+        .timeout(std::time::Duration::from_secs(4))
+        .query(&[
+            ("tmdb_id", tmdb_id),
+            ("season", season.to_string()),
+            ("episode", episode.to_string()),
+            (
+                "duration_ms",
+                duration_ticks
+                    .unwrap_or(0)
+                    .saturating_div(10_000)
+                    .to_string(),
+            ),
+        ]);
     if let Some(key) = state.provider_key("introdb") {
         request = request.bearer_auth(key);
     }

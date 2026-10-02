@@ -20,6 +20,7 @@ export function Player({ item }: PlayerProps) {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [playbackStarted, setPlaybackStarted] = useState(false);
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
@@ -64,12 +65,16 @@ export function Player({ item }: PlayerProps) {
   useEffect(() => {
     let cancelled = false;
     setIntroSegments([]);
-    if (item.Type !== "Episode") return () => { cancelled = true; };
-    void api.mediaSegments(item.Id)
-      .then((result) => { if (!cancelled) setIntroSegments(result.Intro); })
-      .catch(() => { if (!cancelled) setIntroSegments([]); });
-    return () => { cancelled = true; };
-  }, [item.Id, item.Type]);
+    if (item.Type !== "Episode" || !playbackStarted) return () => { cancelled = true; };
+    // Playback gets the connection and CPU first. Intro metadata is optional
+    // and begins only after the media element has actually started playing.
+    const timer = window.setTimeout(() => {
+      void api.mediaSegments(item.Id)
+        .then((result) => { if (!cancelled) setIntroSegments(result.Intro); })
+        .catch(() => { if (!cancelled) setIntroSegments([]); });
+    }, 500);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [item.Id, item.Type, playbackStarted]);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,6 +109,7 @@ export function Player({ item }: PlayerProps) {
     subtitleCuesRef.current = [];
     loadedSubtitleIndexRef.current = null;
     setPlaying(false);
+    setPlaybackStarted(false);
     const supportsHevc = browserSupportsHevc();
     const audioProbe = document.createElement("audio");
     const supportsAc3 = audioProbe.canPlayType('audio/mp4; codecs="ac-3"') !== "";
@@ -511,6 +517,7 @@ export function Player({ item }: PlayerProps) {
       }
       updatePosition();
       setPlaying(true);
+      setPlaybackStarted(true);
       setPlaybackNotice(null);
     },
     onPause: () => {

@@ -194,6 +194,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Users/{user}/Items", get(catalog::user_items))
         .route("/Users/{user}/Items/{id}", get(catalog::user_item))
         .route("/Users/{user}/Items/Resume", get(catalog::resume))
+        .route("/Users/{user}/Items/NextUp", get(catalog::next_up))
         .route(
             "/Users/{user}/FavoriteItems/{id}",
             post(playback::favorite).delete(playback::unfavorite),
