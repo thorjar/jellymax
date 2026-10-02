@@ -166,6 +166,20 @@ export function Player({ item }: PlayerProps) {
   }, [fullscreen, playing, subtitleMenuOpen, audioMenuOpen]);
 
   useEffect(() => {
+    if (!fullscreen) return;
+    // Chromium can dispatch movement through its fullscreen video surface
+    // without React receiving a mousemove on the wrapper. Capture pointer
+    // movement at the document so Edge reliably restores the custom controls.
+    const revealFullscreenControls = () => revealControls();
+    document.addEventListener("pointermove", revealFullscreenControls, true);
+    document.addEventListener("pointerdown", revealFullscreenControls, true);
+    return () => {
+      document.removeEventListener("pointermove", revealFullscreenControls, true);
+      document.removeEventListener("pointerdown", revealFullscreenControls, true);
+    };
+  }, [fullscreen, playing, subtitleMenuOpen, audioMenuOpen]);
+
+  useEffect(() => {
     const video = mediaRef.current;
     if (!(video instanceof HTMLVideoElement)) return;
     const update = () => setPictureInPicture(document.pictureInPictureElement === video ||
@@ -586,7 +600,7 @@ export function Player({ item }: PlayerProps) {
     {isAudio ? <audio {...commonProps} ref={mediaRef as RefObject<HTMLAudioElement>}
       className="w-full rounded-xl border border-edge bg-surface-raised p-3" />
       : <div ref={frameRef} className={`group relative overflow-hidden bg-black ${fullscreen ? "rounded-none border-0 shadow-none" : "rounded-xl border border-edge shadow-lg"} ${fullscreen && !playerControlsShown ? "cursor-none" : ""}`}
-          onMouseMove={revealControls} onMouseLeave={() => { if (playing && !subtitleMenuOpen && !audioMenuOpen) setControlsVisible(false); }}
+          onPointerMove={revealControls} onMouseLeave={() => { if (playing && !subtitleMenuOpen && !audioMenuOpen) setControlsVisible(false); }}
           onFocusCapture={revealControls} onContextMenu={(event) => event.preventDefault()}>
           <video {...commonProps} ref={mediaRef as RefObject<HTMLVideoElement>}
             className={`aspect-video w-full bg-black object-contain ${fullscreen && !playerControlsShown ? "cursor-none" : "cursor-pointer"}`} playsInline
@@ -611,7 +625,7 @@ export function Player({ item }: PlayerProps) {
           {captionText && <div className={`pointer-events-none absolute inset-x-5 z-10 flex justify-center text-center transition-[bottom] duration-200 ${playerControlsShown ? "bottom-24 sm:bottom-20" : "bottom-5 sm:bottom-7"}`} aria-live="off">
             <span className="max-w-[90%] whitespace-pre-line rounded bg-black/75 px-3 py-1.5 text-base font-semibold leading-snug text-white shadow-lg sm:text-lg">{captionText}</span>
           </div>}
-          <div className={`absolute inset-x-0 bottom-0 bg-linear-to-t from-black/95 via-black/75 to-transparent px-3 pb-3 pt-10 text-white transition-opacity duration-200 sm:px-5 ${playerControlsShown ? "opacity-100" : "pointer-events-none opacity-0"}`}>
+          <div className={`absolute inset-x-0 bottom-0 z-30 bg-linear-to-t from-black/95 via-black/75 to-transparent px-3 pb-3 pt-10 text-white transition-opacity duration-200 sm:px-5 ${playerControlsShown ? "opacity-100" : "pointer-events-none opacity-0"}`}>
             <input type="range" min={0} max={duration || 0} step={0.1} value={Math.min(currentTime, duration || 0)}
               onChange={(event) => seek(Number(event.target.value))} aria-label="Seek playback"
               className="w-full cursor-pointer accent-brand" />

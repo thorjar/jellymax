@@ -26,6 +26,21 @@ test("movies show stored metadata and play through a scoped ticket", async ({ pa
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
+test("fullscreen controls return when Chromium reports pointer movement", async ({ page }) => {
+  await page.getByRole("navigation", { name: "Jellymax libraries" }).getByRole("link", { name: "Movies" }).click();
+  await page.getByRole("link", { name: /Windowed Subtitles/ }).click();
+  await page.getByRole("link", { name: "▶ Play", exact: true }).click();
+  const video = page.locator("video");
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.readyState)).toBeGreaterThanOrEqual(2);
+  await page.getByRole("button", { name: "Fullscreen", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.tagName)).toBe("DIV");
+  const controls = page.getByLabel("Seek playback").locator("..");
+  await page.waitForTimeout(3_800);
+  await expect(controls).toHaveClass(/opacity-0/);
+  await page.mouse.move(120, 120);
+  await expect(controls).toHaveClass(/opacity-100/);
+});
+
 test("custom controls seek and enable a converted subtitle track", async ({ page }) => {
   await page.getByRole("navigation", { name: "Jellymax libraries" }).getByRole("link", { name: "Movies" }).click();
   await page.getByRole("link", { name: /Example Movie/ }).click();
