@@ -23,6 +23,7 @@ export function Player({ item }: PlayerProps) {
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [nativeFullscreenControls, setNativeFullscreenControls] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [subtitleMenuOpen, setSubtitleMenuOpen] = useState(false);
   const [audioMenuOpen, setAudioMenuOpen] = useState(false);
@@ -58,6 +59,7 @@ export function Player({ item }: PlayerProps) {
   const stoppedRef = useRef(true);
   const playSessionRef = useRef<string | undefined>(undefined);
   const isAudio = item.MediaType === "Audio";
+  const useWindowsNativeFullscreen = /Windows/i.test(navigator.userAgent);
 
   useEffect(() => () => window.clearTimeout(controlsTimer.current), []);
 
@@ -150,12 +152,18 @@ export function Player({ item }: PlayerProps) {
 
   useEffect(() => {
     const onFullscreenChange = () => {
-      setFullscreen(document.fullscreenElement === frameRef.current);
+      const video = mediaRef.current;
+      const nativeVideoFullscreen = useWindowsNativeFullscreen
+        && video instanceof HTMLVideoElement
+        && document.fullscreenElement === video;
+      setFullscreen(document.fullscreenElement === frameRef.current || nativeVideoFullscreen);
+      setNativeFullscreenControls(nativeVideoFullscreen);
+      if (video instanceof HTMLVideoElement) video.controls = nativeVideoFullscreen;
       setControlsVisible(true);
     };
     document.addEventListener("fullscreenchange", onFullscreenChange);
     return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
-  }, []);
+  }, [useWindowsNativeFullscreen]);
 
   useEffect(() => {
     if (!fullscreen || !playing || subtitleMenuOpen || audioMenuOpen) return;
@@ -208,13 +216,21 @@ export function Player({ item }: PlayerProps) {
     const video = mediaRef.current;
     if (!(video instanceof HTMLVideoElement)) return;
     // WebKit can add native controls through its media context menu. Keep the
-    // custom video player in control even if the attribute is changed later.
-    const hideNativeControls = () => { if (video.controls) video.controls = false; };
-    hideNativeControls();
-    const observer = new MutationObserver(hideNativeControls);
+    // custom player in control except when Windows fullscreen intentionally
+    // delegates to the browser's compositor and native media controls.
+    const syncNativeControls = () => {
+      const expected = useWindowsNativeFullscreen && document.fullscreenElement === video;
+      if (video.controls !== expected) video.controls = expected;
+    };
+    syncNativeControls();
+    const observer = new MutationObserver(syncNativeControls);
     observer.observe(video, { attributes: true, attributeFilter: ["controls"] });
-    return () => observer.disconnect();
-  }, [source, playbackUrl]);
+    document.addEventListener("fullscreenchange", syncNativeControls);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("fullscreenchange", syncNativeControls);
+    };
+  }, [source, playbackUrl, useWindowsNativeFullscreen]);
 
   useEffect(() => {
     if (selectedSubtitle === null || !source) {
@@ -435,7 +451,16 @@ export function Player({ item }: PlayerProps) {
 
   async function toggleFullscreen() {
     if (document.fullscreenElement) await document.exitFullscreen();
-    else if (frameRef.current?.requestFullscreen) await frameRef.current.requestFullscreen();
+    else if (useWindowsNativeFullscreen && mediaRef.current instanceof HTMLVideoElement) {
+      const video = mediaRef.current;
+      video.controls = true;
+      try {
+        await video.requestFullscreen();
+      } catch {
+        video.controls = false;
+        if (frameRef.current?.requestFullscreen) await frameRef.current.requestFullscreen();
+      }
+    } else if (frameRef.current?.requestFullscreen) await frameRef.current.requestFullscreen();
     else if (mediaRef.current instanceof HTMLVideoElement) {
       const video = mediaRef.current as HTMLVideoElement & { webkitEnterFullscreen?: () => void };
       video.webkitEnterFullscreen?.();
@@ -531,7 +556,7 @@ export function Player({ item }: PlayerProps) {
       setSubtitleWindowStart(Math.floor(media.currentTime / 45) * 45);
   };
   const commonProps = {
-    src: nativeSrc, controls: isAudio, autoPlay: true, preload: "auto" as const,
+    src: nativeSrc, controls: isAudio || nativeFullscreenControls, autoPlay: true, preload: "auto" as const,
     onPlay: () => {
       const media = mediaRef.current;
       const pausedAt = pausedPositionRef.current;

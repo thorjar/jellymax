@@ -51,6 +51,27 @@ test("fullscreen controls return when Chromium reports pointer movement", async 
   await expect(controls).toHaveClass(/opacity-100/);
 });
 
+test("Windows fullscreen delegates to the browser's native video controls", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      get: () => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
+    });
+  });
+  await page.reload();
+  await page.getByRole("navigation", { name: "Jellymax libraries" }).getByRole("link", { name: "Movies" }).click();
+  await page.getByRole("link", { name: /Windowed Subtitles/ }).click();
+  await page.getByRole("link", { name: "▶ Play", exact: true }).click();
+  const video = page.locator("video");
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.readyState)).toBeGreaterThanOrEqual(2);
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.controls)).toBe(false);
+  await page.getByRole("button", { name: "Fullscreen", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.tagName)).toBe("VIDEO");
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.controls)).toBe(true);
+  await page.evaluate(() => document.exitFullscreen());
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.controls)).toBe(false);
+});
+
 test("connected Jellyfin intro markers take priority", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const token = localStorage.getItem("jellymax_token") ?? "";
