@@ -84,3 +84,29 @@
     @apply bg-brand/15 text-brand-strong hover:bg-brand/15 hover:text-brand-strong;
   }
 }
+
+
+/*
+ * Edge on Windows may promote a fullscreen video into a DirectComposition
+ * overlay after normal CSS painting. Isolate the player and put interactive
+ * overlays on their own 3D layer so they remain visibly above that surface.
+ */
+.jellymax-player-frame:fullscreen {
+  isolation: isolate;
+  contain: layout paint;
+  transform: translateZ(0);
+}
+
+.jellymax-player-frame:fullscreen > video {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+.jellymax-player-frame:fullscreen > .jellymax-player-overlay {
+  transform: translateZ(1px);
+  backface-visibility: hidden;
+  will-change: opacity, transform;
+}

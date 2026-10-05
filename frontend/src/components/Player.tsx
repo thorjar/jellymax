@@ -610,7 +610,7 @@ export function Player({ item }: PlayerProps) {
   return <div className={`mx-auto ${isAudio ? "max-w-2xl" : "max-w-4xl"}`}>
     {isAudio ? <audio {...commonProps} ref={mediaRef as RefObject<HTMLAudioElement>}
       className="w-full rounded-xl border border-edge bg-surface-raised p-3" />
-      : <div ref={frameRef} className={`group relative overflow-hidden bg-black ${fullscreen ? "h-screen w-screen rounded-none border-0 shadow-none" : "rounded-xl border border-edge shadow-lg"} ${fullscreen && !playerControlsShown ? "cursor-none" : ""}`}
+      : <div ref={frameRef} className={`jellymax-player-frame group relative overflow-hidden bg-black ${fullscreen ? "h-screen w-screen rounded-none border-0 shadow-none" : "rounded-xl border border-edge shadow-lg"} ${fullscreen && !playerControlsShown ? "cursor-none" : ""}`}
           onPointerMove={revealControls} onMouseMove={revealControls}
           onMouseLeave={() => {
             if (!fullscreen && playing && !subtitleMenuOpen && !audioMenuOpen) setControlsVisible(false);
@@ -627,7 +627,7 @@ export function Player({ item }: PlayerProps) {
               onError={() => setSubtitleError("The browser could not read this subtitle track. Choose it to retry.")} />}
           </video>
           {fullscreen && <div aria-hidden="true"
-            className={`absolute inset-0 z-10 ${playerControlsShown ? "cursor-default" : "cursor-none"}`}
+            className={`jellymax-player-overlay absolute inset-0 z-10 ${playerControlsShown ? "cursor-default" : "cursor-none"}`}
             onPointerMove={revealControls} onMouseMove={revealControls}
             onPointerDown={revealControls} onClick={togglePlayback} />}
           {playbackNotice && <div className="pointer-events-none absolute inset-x-4 top-4 z-20 flex justify-center" role="status">
@@ -644,7 +644,7 @@ export function Player({ item }: PlayerProps) {
             <span className="max-w-[90%] whitespace-pre-line rounded bg-black/75 px-3 py-1.5 text-base font-semibold leading-snug text-white shadow-lg sm:text-lg">{captionText}</span>
           </div>}
           <div className={fullscreen
-            ? `absolute inset-x-0 bottom-0 z-30 bg-linear-to-t from-black/95 via-black/75 to-transparent px-3 pb-3 pt-10 text-white transition-opacity duration-200 sm:px-5 ${playerControlsShown ? "opacity-100" : "pointer-events-none translate-y-full opacity-0"}`
+            ? `jellymax-player-overlay absolute inset-x-0 bottom-0 z-30 bg-linear-to-t from-black/95 via-black/75 to-transparent px-3 pb-3 pt-10 text-white transition-opacity duration-200 sm:px-5 ${playerControlsShown ? "opacity-100" : "pointer-events-none opacity-0"}`
             : "relative z-30 border-t border-edge bg-surface-raised px-3 py-3 text-white sm:px-5"}>
             <input type="range" min={0} max={duration || 0} step={0.1} value={Math.min(currentTime, duration || 0)}
               onChange={(event) => seek(Number(event.target.value))} aria-label="Seek playback"

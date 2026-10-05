@@ -42,6 +42,9 @@ test("fullscreen controls return when Chromium reports pointer movement", async 
   await expect(frame).toHaveClass(/h-screen/);
   await expect.poll(async () => Math.round((await frame.boundingBox())?.height ?? 0)).toBe(800);
   await expect(controls).toHaveClass(/absolute/);
+  await expect(frame).toHaveCSS("isolation", "isolate");
+  await expect(controls).not.toHaveCSS("transform", "none");
+  await expect(video).toHaveCSS("z-index", "0");
   await page.waitForTimeout(3_800);
   await expect(controls).toHaveClass(/opacity-0/);
   await page.mouse.move(640, 790);
