@@ -84,7 +84,7 @@ Authentication is header-based. Long-lived tokens in URL query strings and brows
 | GET | `/Items/{id}/Subtitles/{index}` | Browser-ready WebVTT for SRT and embedded text tracks; original VTT sidecars |
 | GET / POST | `/Items/{id}/SubtitleSearch`, `/Items/{id}/SubtitleDownload` | Search OpenSubtitles and retrieve a selected SRT file when configured |
 | GET / PUT | `/System/Providers` | View and update server-side API provider configuration (administrator only) |
-| GET | `/Items/{id}/Segments` | Retrieve cached TheIntroDB intro timestamps after episode playback starts |
+| GET | `/Items/{id}/Segments` | Retrieve cached Jellyfin or TheIntroDB intro timestamps for an episode |
 | GET | `/Users/{user}/Items/NextUp` | Return the next unplayed episode for recently watched series |
 | GET / POST | `/Playlists` | List private playlists / create with `Name` and `Ids` array |
 | GET / POST | `/Playlists/{id}/Items` | Paged ordered items / append `Ids` array atomically |

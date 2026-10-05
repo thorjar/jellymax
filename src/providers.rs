@@ -183,44 +183,109 @@ fn intro_segments(body: &Value) -> Vec<Segment> {
         .collect()
 }
 
+fn cache_lifetime(value: &Value) -> i64 {
+    if value
+        .get("Intro")
+        .and_then(Value::as_array)
+        .is_some_and(|segments| !segments.is_empty())
+    {
+        SEGMENT_CACHE_SECONDS
+    } else {
+        // New server/plugin analysis and corrected community submissions should
+        // become visible quickly. An empty result is not authoritative.
+        5 * 60
+    }
+}
+
+async fn store_segment_cache(
+    state: &AppState,
+    item_id: String,
+    value: &Value,
+    fetched_at: i64,
+) -> Result<()> {
+    let payload = serde_json::to_string(value).map_err(Error::internal)?;
+    state
+        .db
+        .call(move |db| {
+            db.execute(
+                "INSERT INTO media_segments(item_id,payload,fetched_at) VALUES (?1,?2,?3)
+                 ON CONFLICT(item_id) DO UPDATE SET payload=excluded.payload,fetched_at=excluded.fetched_at",
+                params![item_id, payload, fetched_at],
+            )?;
+            Ok(())
+        })
+        .await
+}
+
 pub async fn segments(
     _auth: Auth,
     State(state): State<AppState>,
     Path(item_id): Path<String>,
 ) -> Result<Json<Value>> {
-    let cache_id = item_id.clone();
-    let (tmdb_id, season, episode, duration_ticks): (Option<String>, Option<i64>, Option<i64>, Option<i64>) = state.db.call(move |db| {
-        db.query_row(
-            "SELECT (SELECT tmdb_id FROM items series WHERE series.id=(SELECT parent_id FROM items season WHERE season.id=i.parent_id)),i.parent_index_number,i.index_number,i.runtime_ticks FROM items i WHERE i.id=?1 AND i.kind='Episode'",
-            [item_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        ).optional()?.ok_or_else(Error::missing)
-    }).await?;
-    let (Some(tmdb_id), Some(season), Some(episode)) = (tmdb_id, season, episode) else {
-        return Ok(Json(json!({"Intro":[],"Source":"TheIntroDB"})));
-    };
-    if !tmdb_id.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Ok(Json(json!({"Intro":[],"Source":"TheIntroDB"})));
-    }
+    let lookup_id = item_id.clone();
+    let metadata: (Option<String>, Option<i64>, Option<i64>, Option<i64>) = state
+        .db
+        .call(move |db| {
+            db.query_row(
+                "SELECT (SELECT tmdb_id FROM items series WHERE series.id=(SELECT parent_id FROM items season WHERE season.id=i.parent_id)),i.parent_index_number,i.index_number,i.runtime_ticks
+                 FROM items i WHERE i.id=?1 AND i.kind='Episode'",
+                [lookup_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?
+            .ok_or_else(Error::missing)
+        })
+        .await?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-    let cached_id = cache_id.clone();
-    if let Some(payload) = state
+    let cache_id = item_id.clone();
+    let cached = state
         .db
         .call(move |db| {
             Ok(db
                 .query_row(
-                    "SELECT payload FROM media_segments WHERE item_id=?1 AND fetched_at>?2",
-                    params![cached_id, now - SEGMENT_CACHE_SECONDS],
-                    |row| row.get::<_, String>(0),
+                    "SELECT payload,fetched_at FROM media_segments WHERE item_id=?1",
+                    [cache_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
                 )
                 .optional()?)
         })
         .await?
-        && let Ok(value) = serde_json::from_str(&payload)
+        .and_then(|(payload, fetched_at)| {
+            serde_json::from_str::<Value>(&payload)
+                .ok()
+                .map(|value| (value, fetched_at))
+        });
+
+    // A cached Jellyfin marker is the most release-specific source available.
+    if let Some((value, fetched_at)) = cached.as_ref()
+        && value.get("Source").and_then(Value::as_str) == Some("Jellyfin")
+        && now - fetched_at < cache_lifetime(value)
+    {
+        return Ok(Json(value.clone()));
+    }
+
+    // Connected Jellyfin 10.10+ servers expose plugin-generated markers at
+    // /MediaSegments/{itemId}. Prefer these over community timestamps because
+    // they were generated for the exact file being streamed.
+    if let Some(value) = crate::remote::media_segments(&state, &item_id).await? {
+        store_segment_cache(&state, item_id, &value, now).await?;
+        return Ok(Json(value));
+    }
+
+    if let Some((value, fetched_at)) = cached
+        && now - fetched_at < cache_lifetime(&value)
     {
         return Ok(Json(value));
+    }
+
+    let (Some(tmdb_id), Some(season), Some(episode), duration_ticks) = metadata else {
+        return Ok(Json(json!({"Intro":[],"Source":"None"})));
+    };
+    if !tmdb_id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok(Json(json!({"Intro":[],"Source":"None"})));
     }
     let base = if cfg!(debug_assertions) {
         std::env::var("JELLYMAX_INTRODB_TEST_BASE").unwrap_or_else(|_| INTRODB_API.into())
@@ -268,17 +333,22 @@ pub async fn segments(
         let intro = intro_segments(&body);
         json!({"Intro":intro,"Source":"TheIntroDB"})
     };
-    let payload = serde_json::to_string(&value).map_err(Error::internal)?;
-    state.db.call(move |db| { db.execute(
-        "INSERT INTO media_segments(item_id,payload,fetched_at) VALUES (?1,?2,?3) ON CONFLICT(item_id) DO UPDATE SET payload=excluded.payload,fetched_at=excluded.fetched_at",
-        params![cache_id, payload, now],
-    )?; Ok(()) }).await?;
+    store_segment_cache(&state, item_id, &value, now).await?;
     Ok(Json(value))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_marker_results_expire_quickly() {
+        assert_eq!(cache_lifetime(&json!({"Intro":[]})), 5 * 60);
+        assert_eq!(
+            cache_lifetime(&json!({"Intro":[{"StartTicks":0,"EndTicks":1}]})),
+            SEGMENT_CACHE_SECONDS
+        );
+    }
 
     #[test]
     fn normalizes_introdb_ranges_and_ignores_invalid_ones() {

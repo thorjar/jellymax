@@ -51,6 +51,21 @@ test("fullscreen controls return when Chromium reports pointer movement", async 
   await expect(controls).toHaveClass(/opacity-100/);
 });
 
+test("connected Jellyfin intro markers take priority", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const token = localStorage.getItem("jellymax_token") ?? "";
+    const response = await fetch("/Items/browser-remote-episode/Segments", {
+      headers: { "X-Emby-Token": token },
+    });
+    return { status: response.status, body: await response.json() };
+  });
+  expect(result.status).toBe(200);
+  expect(result.body).toEqual({
+    Intro: [{ StartTicks: 10_000_000, EndTicks: 50_000_000 }],
+    Source: "Jellyfin",
+  });
+});
+
 test("custom controls seek and enable a converted subtitle track", async ({ page }) => {
   await page.getByRole("navigation", { name: "Jellymax libraries" }).getByRole("link", { name: "Movies" }).click();
   await page.getByRole("link", { name: /Example Movie/ }).click();

@@ -120,6 +120,16 @@ with tempfile.TemporaryDirectory(prefix="jellymax-browser-") as temporary:
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
                     pass
+            elif route.path == "/MediaSegments/remote-episode" and 'Token="secret"' in self.headers.get("Authorization", ""):
+                payload = json.dumps({"Items": [
+                    {"Type": "Outro", "StartTicks": 900000000, "EndTicks": 1000000000},
+                    {"Type": "Intro", "StartTicks": 10000000, "EndTicks": 50000000}
+                ], "TotalRecordCount": 2}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
             elif route.path == "/Items/remote-subtitle/PlaybackInfo":
                 payload = json.dumps({"MediaSources": [
                     {"Id": "wrong-source", "MediaStreams": [{"Type": "Subtitle", "Index": 2, "Codec": "ass"}]},
@@ -231,6 +241,7 @@ with tempfile.TemporaryDirectory(prefix="jellymax-browser-") as temporary:
             db.execute("INSERT INTO remote_servers(id,name,base_url,server_id,user_id,access_token,device_id) VALUES ('browser-remote','Mock Jellyfin','http://127.0.0.1:18099','upstream','remote-user','secret','browser-device')")
             db.execute("INSERT INTO libraries(id,name,path,kind,remote_server_id,remote_item_id) VALUES ('browser-remote-library','Remote Movies','remote://browser/movies','movies','browser-remote','remote-view')")
             db.execute("INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,scan_id,remote_server_id,remote_item_id) VALUES ('browser-remote-mkv','browser-remote-library','remote://browser/movie','Remote Dual Subtitles','Movie','mkv',?,0,1000000000,?,'browser','browser-remote','remote-subtitle')", (remote_mkv.stat().st_size, json.dumps(streams)))
+            db.execute("INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,scan_id,remote_server_id,remote_item_id) VALUES ('browser-remote-episode','browser-remote-library','remote://browser/episode','Remote Marker Episode','Episode','mkv',?,0,1000000000,?,'browser','browser-remote','remote-episode')", (remote_mkv.stat().st_size, json.dumps(streams)))
             db.execute("UPDATE items SET tmdb_id='100',overview='Series description' WHERE kind='Series'")
             db.execute("UPDATE items SET name='Episode Two',tmdb_id='102',overview='Episode description' WHERE kind='Episode' AND parent_index_number=1 AND index_number=2")
         # Playwright waits for this marker, so tests cannot race fixture creation.
