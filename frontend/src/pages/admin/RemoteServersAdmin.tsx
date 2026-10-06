@@ -12,7 +12,12 @@ export function RemoteServersAdmin() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const load = useCallback(async () => { try { setServers(await api.remoteServers()); } catch (e) { setMessage(e instanceof Error ? e.message : String(e)); } }, []);
+  const [status, setStatus] = useState<Record<string, boolean>>({});
+  const load = useCallback(async () => { try {
+    const [nextServers, statuses] = await Promise.all([api.remoteServers(), api.remoteServerStatuses()]);
+    setServers(nextServers);
+    setStatus(Object.fromEntries(statuses.map(server => [server.Id, server.Online])));
+  } catch (e) { setMessage(e instanceof Error ? e.message : String(e)); } }, []);
   useEffect(() => { void load(); }, [load]);
   async function connect(event: FormEvent) {
     event.preventDefault(); setBusy(true); setMessage("Connecting and importing the remote catalog…");
@@ -34,6 +39,6 @@ export function RemoteServersAdmin() {
     {message&&<p className="mt-4 rounded-lg border border-edge bg-surface-hover px-3 py-2 text-sm">{message}</p>}
     <h2 className="mt-8 text-lg font-semibold">Connected servers</h2>
     {!servers?<div className="mt-4"><Spinner label="Loading remote servers…" /></div>:servers.length===0?<p className="muted mt-4 rounded-xl border border-dashed border-edge py-10 text-center text-sm">No remote servers connected.</p>:
-      <ul className="mt-4 divide-y divide-edge overflow-hidden rounded-xl border border-edge bg-surface-raised">{servers.map(server=><li key={server.Id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"><div className="min-w-0"><div className="font-medium">{server.Name}</div><div className="muted truncate text-sm">{server.Url}{server.LastSync?` · Synced ${new Date(server.LastSync*1000).toLocaleString()}`:""}</div>{server.LastError&&<div className="mt-1 text-sm text-danger">{server.LastError}</div>}</div><div className="flex gap-2"><button className="btn" disabled={busy} onClick={()=>void sync(server)}>Sync</button><button className="btn btn-danger" disabled={busy} onClick={()=>void remove(server)}>Disconnect</button></div></li>)}</ul>}
+      <ul className="mt-4 divide-y divide-edge overflow-hidden rounded-xl border border-edge bg-surface-raised">{servers.map(server=><li key={server.Id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"><div className="min-w-0"><div className="flex items-center gap-2 font-medium"><span className={`h-2 w-2 rounded-full ${status[server.Id] === false ? "bg-danger" : "bg-emerald-400"}`}/>{server.Name}{status[server.Id] === false&&<span className="text-xs font-medium text-danger">Offline</span>}</div><div className="muted truncate text-sm">{server.Url}{server.LastSync?` · Synced ${new Date(server.LastSync*1000).toLocaleString()}`:""}</div>{server.LastError&&<div className="mt-1 text-sm text-danger">{server.LastError}</div>}</div><div className="flex gap-2"><button className="btn" disabled={busy} onClick={()=>void sync(server)}>Sync</button><button className="btn btn-danger" disabled={busy} onClick={()=>void remove(server)}>Disconnect</button></div></li>)}</ul>}
   </div>;
 }

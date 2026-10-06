@@ -30,6 +30,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     () => readCatalogCache<Library[]>("libraries") ?? []
   );
   const [localServerName, setLocalServerName] = useState("This server");
+  const [serverStatus, setServerStatus] = useState<Record<string, boolean>>({});
   // The logo <img> can fail to load (missing /jellymax-mark.svg, or a server
   // falling back to HTML with 200); fall back to an inline icon tile.
   const [markFailed, setMarkFailed] = useState(false);
@@ -37,6 +38,11 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   useEffect(() => {
     let cancelled = false;
+    const refreshStatus = () => { void api.remoteServerStatuses()
+      .then(statuses => {
+        if (!cancelled) setServerStatus(Object.fromEntries(statuses.map(status => [status.Id, status.Online])));
+      })
+      .catch(() => {}); };
     const refresh = () => { void api.libraries()
       .then((libs) => {
         if (!cancelled) {
@@ -46,12 +52,14 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       })
       .catch(() => {
         // The sidebar still works without library entries.
-      }); };
+      }); refreshStatus(); };
     refresh();
+    const statusTimer = window.setInterval(refreshStatus, 30_000);
     void api.systemInfo().then(info => setLocalServerName(info.ServerName)).catch(() => {});
     window.addEventListener(LIBRARIES_CHANGED_EVENT, refresh);
     return () => {
       cancelled = true;
+      window.clearInterval(statusTimer);
       window.removeEventListener(LIBRARIES_CHANGED_EVENT, refresh);
     };
   }, []);
@@ -81,7 +89,15 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           <NavItem to="/playlists" icon={ICONS.list} onNavigate={onNavigate}>Playlists</NavItem>
         </nav>
         {groups.map(group => <div className="mt-6" key={group.key}>
-          <p className="mb-1.5 flex items-center gap-2 px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-muted/70"><span className={`h-1.5 w-1.5 rounded-full ${group.isLocal ? "bg-brand" : "bg-emerald-400"}`}/><span className="truncate">{group.name}</span></p>
+          <p className="mb-1.5 flex items-center gap-2 px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-muted/70">
+            <span
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${group.isLocal ? "bg-brand" : group.remoteServerId && serverStatus[group.remoteServerId] === false ? "bg-danger" : "bg-emerald-400"}`}
+              title={group.remoteServerId && serverStatus[group.remoteServerId] === false ? "Server offline" : undefined}
+              aria-label={group.remoteServerId && serverStatus[group.remoteServerId] === false ? "Server offline" : undefined}
+            />
+            <span className="truncate">{group.name}</span>
+            {group.remoteServerId && serverStatus[group.remoteServerId] === false && <span className="ml-auto normal-case tracking-normal text-danger">Offline</span>}
+          </p>
           <nav className="space-y-1" aria-label={`${group.name} libraries`}>
             {group.libraries.map(library => <NavItem key={library.ItemId} to={`/library/${library.ItemId}`} icon={ICONS.folder} onNavigate={onNavigate}>{library.Name}</NavItem>)}
           </nav>

@@ -4,6 +4,7 @@ export interface LibraryGroup {
   key: string;
   name: string;
   isLocal: boolean;
+  remoteServerId?: string;
   libraries: Library[];
 }
 
@@ -13,7 +14,7 @@ export function groupLibraries(libraries: Library[], localServerName: string): L
     const isLocal = !library.IsRemote;
     const name = isLocal ? localServerName : library.RemoteServerName || "Remote server";
     const key = `${isLocal ? "local" : "remote"}:${name}`;
-    const group = groups.get(key) ?? { key, name, isLocal, libraries: [] };
+    const group = groups.get(key) ?? { key, name, isLocal, remoteServerId: library.RemoteServerId ?? undefined, libraries: [] };
     group.libraries.push(library);
     groups.set(key, group);
   }

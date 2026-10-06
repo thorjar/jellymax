@@ -21,6 +21,7 @@ pub struct Library {
     pub collection_type: String,
     pub locations: Vec<String>,
     pub is_remote: bool,
+    pub remote_server_id: Option<String>,
     pub remote_server_name: Option<String>,
     pub is_object_store: bool,
 }
@@ -52,6 +53,7 @@ pub async fn libraries(auth: Auth, State(state): State<AppState>) -> Result<Json
                         },
                         is_remote: r.get::<_, Option<String>>(4)?.is_some()
                             || r.get::<_, bool>(6)?,
+                        remote_server_id: r.get(4)?,
                         remote_server_name: r.get(5)?,
                         is_object_store: r.get(6)?,
                     })

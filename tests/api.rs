@@ -179,6 +179,34 @@ async fn remote_playback_uses_local_hls_and_static_upstream_input() {
 }
 
 #[tokio::test]
+async fn remote_server_status_reports_reachable_and_offline_origins() {
+    let upstream = Router::new().route(
+        "/System/Info",
+        axum::routing::get(|| async { axum::Json(json!({"ServerName":"Online"})) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let s = TestServer::new().await;
+    s.state.db.call(move |c| {
+        c.execute("INSERT INTO remote_servers(id,name,base_url,server_id,user_id,access_token,device_id) VALUES ('online','Online',?1,'upstream','user','token','device')", [format!("http://{address}")])?;
+        c.execute("INSERT INTO remote_servers(id,name,base_url,server_id,user_id,access_token,device_id) VALUES ('offline','Offline','http://127.0.0.1:1','upstream','user','token','device')", [])?;
+        Ok(())
+    }).await.unwrap();
+
+    let (status, body) = s.call("GET", "/RemoteServers/Status", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        json!([
+            {"Id":"offline","Online":false},
+            {"Id":"online","Online":true}
+        ])
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn remote_external_srt_is_fetched_in_original_format_and_served_as_vtt() {
     let upstream = Router::new()
         .route("/Items/abcd/PlaybackInfo", axum::routing::get(|| async {

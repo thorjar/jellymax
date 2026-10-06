@@ -159,6 +159,7 @@ pub fn router(state: AppState) -> Router {
             get(providers::get).put(providers::update),
         )
         .route("/RemoteServers", get(remote::list).post(remote::connect))
+        .route("/RemoteServers/Status", get(remote::statuses))
         .route(
             "/ObjectStores",
             get(object_storage::list).post(object_storage::connect),

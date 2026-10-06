@@ -38,6 +38,13 @@ pub struct RemoteServerView {
     last_error: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct RemoteServerStatus {
+    id: String,
+    online: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ConnectInput {
@@ -179,6 +186,56 @@ pub async fn list(
     state.db.call(|c|{let mut q=c.prepare("SELECT id,name,base_url,server_id,last_sync,last_error FROM remote_servers ORDER BY name,id")?;
         Ok(Json(q.query_map([],|r|Ok(RemoteServerView{id:r.get(0)?,name:r.get(1)?,url:r.get(2)?,server_id:r.get(3)?,last_sync:r.get(4)?,last_error:r.get(5)?}))?.collect::<std::result::Result<Vec<_>,_>>()?))}).await
 }
+/// Check connected servers without delaying catalog requests. Probes run in
+/// parallel and are bounded so an offline origin cannot hold the sidebar open.
+pub async fn statuses(
+    _auth: Auth,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<RemoteServerStatus>>> {
+    let servers = state
+        .db
+        .call(|c| {
+            let mut query = c.prepare(
+                "SELECT id,base_url,user_id,access_token,device_id FROM remote_servers ORDER BY id",
+            )?;
+            Ok(query
+                .query_map([], |row| {
+                    Ok(RemoteServer {
+                        id: row.get(0)?,
+                        base_url: row.get(1)?,
+                        user_id: row.get(2)?,
+                        token: row.get(3)?,
+                        device_id: row.get(4)?,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+        .await?;
+    let checks = servers.into_iter().map(|server| {
+        let client = state.http.clone();
+        async move {
+            let online = endpoint(&server, "System/Info")
+                .ok()
+                .map(|url| authorized(client.get(url), &server))
+                .map(|request| async move {
+                    tokio::time::timeout(std::time::Duration::from_secs(4), request.send())
+                        .await
+                        .ok()
+                        .and_then(std::result::Result::ok)
+                        .is_some_and(|response| response.status().is_success())
+                });
+            RemoteServerStatus {
+                id: server.id,
+                online: match online {
+                    Some(check) => check.await,
+                    None => false,
+                },
+            }
+        }
+    });
+    Ok(Json(futures_util::future::join_all(checks).await))
+}
+
 pub async fn connect(
     auth: Auth,
     State(state): State<AppState>,

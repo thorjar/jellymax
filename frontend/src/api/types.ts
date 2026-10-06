@@ -31,6 +31,7 @@ export interface Library {
   CollectionType: string;
   Locations: string[];
   IsRemote: boolean;
+  RemoteServerId?: string | null;
   RemoteServerName?: string | null;
   IsObjectStore?: boolean;
 }
@@ -185,6 +186,11 @@ export interface RemoteServer {
   ServerId: string;
   LastSync?: number | null;
   LastError?: string | null;
+}
+
+export interface RemoteServerStatus {
+  Id: string;
+  Online: boolean;
 }
 
 export interface ObjectStoreConnection {

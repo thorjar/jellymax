@@ -9,6 +9,7 @@ import type {
   ScanStatus,
   SystemInfo,
   RemoteServer,
+  RemoteServerStatus,
   Recommendation,
   User,
   UserData,
@@ -239,6 +240,7 @@ export const api = {
     request<{ Id: string }>("/Library/Refresh", { method: "POST" }),
   scanStatus: () => request<ScanStatus[]>("/ScheduledTasks"),
   remoteServers: () => request<RemoteServer[]>("/RemoteServers"),
+  remoteServerStatuses: () => request<RemoteServerStatus[]>("/RemoteServers/Status"),
   connectRemote: (name: string, url: string, username: string, password: string) =>
     request<{ Id: string; ServerId: string }>("/RemoteServers", {
       method: "POST", body: JSON.stringify({ Name: name, Url: url, Username: username, Password: password }),
