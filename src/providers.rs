@@ -197,7 +197,7 @@ fn cache_lifetime(value: &Value) -> i64 {
     }
 }
 
-async fn store_segment_cache(
+pub(crate) async fn store_segment_cache(
     state: &AppState,
     item_id: String,
     value: &Value,
@@ -259,35 +259,18 @@ pub async fn segments(
                 .map(|value| (value, fetched_at))
         });
 
-    // Return every fresh result immediately. Jellyfin markers are already the
-    // most release-specific source. A fresh community result is served with a
-    // background Jellyfin refresh so connected servers without marker plugins
-    // do not add a four-second network delay to every playback start.
-    if let Some((value, fetched_at)) = cached.as_ref()
-        && now - fetched_at < cache_lifetime(value)
-    {
-        if value.get("Source").and_then(Value::as_str) != Some("Jellyfin") {
-            let refresh_state = state.clone();
-            let refresh_item = item_id.clone();
-            tokio::spawn(async move {
-                if let Ok(Some(fresh)) =
-                    crate::remote::media_segments(&refresh_state, &refresh_item).await
-                    && let Err(error) =
-                        store_segment_cache(&refresh_state, refresh_item.clone(), &fresh, now).await
-                {
-                    tracing::warn!(%error, item=%refresh_item, "Could not cache refreshed Jellyfin media segments");
-                }
-            });
+    // Playback only reads markers prepared ahead of time. Connected Jellyfin
+    // markers are cached by remote synchronization; this endpoint never waits
+    // for the media server that is currently supplying the video stream.
+    if let Some((value, fetched_at)) = cached.as_ref() {
+        let has_markers = value
+            .get("Intro")
+            .and_then(Value::as_array)
+            .is_some_and(|segments| !segments.is_empty());
+        let jellyfin = value.get("Source").and_then(Value::as_str) == Some("Jellyfin");
+        if has_markers && (jellyfin || now - fetched_at < cache_lifetime(value)) {
+            return Ok(Json(value.clone()));
         }
-        return Ok(Json(value.clone()));
-    }
-
-    // Connected Jellyfin 10.10+ servers expose plugin-generated markers at
-    // /MediaSegments/{itemId}. Prefer these over community timestamps because
-    // they were generated for the exact file being streamed.
-    if let Some(value) = crate::remote::media_segments(&state, &item_id).await? {
-        store_segment_cache(&state, item_id, &value, now).await?;
-        return Ok(Json(value));
     }
 
     let (Some(tmdb_id), Some(season), Some(episode), duration_ticks) = metadata else {

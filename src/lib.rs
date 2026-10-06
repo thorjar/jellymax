@@ -105,7 +105,7 @@ impl AppState {
             .user_agent("Jellymax/0.1")
             .build()
             .map_err(error::Error::internal)?;
-        Ok(Self {
+        let state = Self {
             db,
             server_id,
             name,
@@ -126,7 +126,9 @@ impl AppState {
             internal_origin: Arc::new(RwLock::new(String::new())),
             internal_token: uuid::Uuid::new_v4().simple().to_string(),
             object_uploads: object_storage::UploadSessions::default(),
-        })
+        };
+        remote::schedule_all_media_segment_caches(&state).await?;
+        Ok(state)
     }
 }
 

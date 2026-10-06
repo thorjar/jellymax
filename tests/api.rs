@@ -179,6 +179,103 @@ async fn remote_playback_uses_local_hls_and_static_upstream_input() {
 }
 
 #[tokio::test]
+async fn remote_sync_caches_segments_and_playback_only_reads_the_cache() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let marker_requests = Arc::new(AtomicUsize::new(0));
+    let requests = marker_requests.clone();
+    let upstream = Router::new()
+        .route("/UserViews", axum::routing::get(|| async {
+            axum::Json(json!({"Items":[{"Id":"view","Name":"Shows","CollectionType":"tvshows","Type":"CollectionFolder"}]}))
+        }))
+        .route("/Items", axum::routing::get(|| async {
+            axum::Json(json!({"Items":[
+                {"Id":"series","Name":"Series","Type":"Series","ProviderIds":{"Tmdb":"123"}},
+                {"Id":"season","Name":"Season 1","Type":"Season","ParentId":"series","IndexNumber":1},
+                {"Id":"episode","Name":"Episode 1","Type":"Episode","ParentId":"season","ParentIndexNumber":1,"IndexNumber":1,"RunTimeTicks":600000000}
+            ]}))
+        }))
+        .route("/MediaSegments/episode", axum::routing::get(move || {
+            let requests = requests.clone();
+            async move {
+                requests.fetch_add(1, Ordering::SeqCst);
+                axum::Json(json!({"Items":[{"Type":"Intro","StartTicks":10000000,"EndTicks":90000000}]}))
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let s = TestServer::new().await;
+    s.state.db.call(move |c| {
+        c.execute("INSERT INTO remote_servers(id,name,base_url,server_id,user_id,access_token,device_id) VALUES ('remote','Remote',?1,'upstream','user','token','device')", [format!("http://{address}")])?;
+        Ok(())
+    }).await.unwrap();
+
+    assert_eq!(
+        s.call("POST", "/RemoteServers/remote/Sync", None).await.0,
+        StatusCode::OK
+    );
+    let episode = s
+        .state
+        .db
+        .call(|c| {
+            Ok(c.query_row(
+                "SELECT id FROM items WHERE remote_server_id='remote' AND remote_item_id='episode'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let cached = s
+                .state
+                .db
+                .call({
+                    let episode = episode.clone();
+                    move |c| {
+                        Ok(c.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM media_segments WHERE item_id=?1)",
+                            [episode],
+                            |row| row.get::<_, bool>(0),
+                        )?)
+                    }
+                })
+                .await
+                .unwrap();
+            if cached {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let fetched_during_sync = marker_requests.load(Ordering::SeqCst);
+    assert_eq!(fetched_during_sync, 1);
+
+    let (status, markers) = s
+        .call("GET", &format!("/Items/{episode}/Segments"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(markers["Source"], "Jellyfin");
+    assert_eq!(
+        markers["Intro"][0],
+        json!({"StartTicks":10000000,"EndTicks":90000000})
+    );
+    assert_eq!(
+        marker_requests.load(Ordering::SeqCst),
+        fetched_during_sync,
+        "playback marker lookup must not contact the remote Jellyfin server"
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn remote_server_status_reports_reachable_and_offline_origins() {
     let upstream = Router::new().route(
         "/System/Info",
