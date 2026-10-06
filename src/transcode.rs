@@ -16,7 +16,7 @@ use tokio::{
 
 const SEGMENT_SECONDS: u64 = 6;
 const RESTART_GAP: u64 = 4;
-const READ_AHEAD_SECONDS: u64 = 18;
+const READ_AHEAD_SECONDS: u64 = 36;
 const RETAIN_BEHIND_SEGMENTS: u64 = 10;
 const DEFAULT_CACHE_LIMIT_MB: u64 = 512;
 const MIB: u64 = 1024 * 1024;
@@ -420,7 +420,9 @@ fn start_ffmpeg(
     if let Some(headers) = source_headers {
         command.args(["-headers", &headers]);
     }
-    command.args(["-readrate", "1"]);
+    // Run slightly ahead of real time so transient network and CPU jitter can
+    // refill the playback buffer without allowing an unbounded transcode sprint.
+    command.args(["-readrate", "1.05"]);
     if supports_initial_burst(ffmpeg) {
         command.args(["-readrate_initial_burst", &READ_AHEAD_SECONDS.to_string()]);
     }

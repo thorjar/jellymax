@@ -72,9 +72,8 @@ export function Player({ item }: PlayerProps) {
   useEffect(() => {
     let cancelled = false;
     if (item.Type !== "Episode" || playbackStartedItem !== item.Id) return () => { cancelled = true; };
-    // Playback owns the startup path. Marker discovery starts only after the
-    // media element has successfully begun playing, so a slow or unavailable
-    // provider cannot contend with the first HLS segment.
+    // Intro discovery is optional. Give playback time to establish its forward
+    // buffer before making another request to the same remote media server.
     const timer = window.setTimeout(() => {
       void api.mediaSegments(item.Id)
         .then((result) => {
@@ -84,7 +83,7 @@ export function Player({ item }: PlayerProps) {
             .sort((left, right) => left.StartTicks - right.StartTicks));
         })
         .catch(() => { if (!cancelled) setIntroSegments([]); });
-    }, 250);
+    }, 5_000);
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [item.Id, item.Type, playbackStartedItem]);
 
@@ -501,17 +500,40 @@ export function Player({ item }: PlayerProps) {
       if (disposed) return;
       if (!Hls.isSupported()) { setError("This browser cannot play the transcoded HLS stream."); return; }
       const startPosition = switchPositionRef.current ?? ticksToSeconds(item.UserData?.Played ? 0 : item.UserData?.PlaybackPositionTicks);
-      player = new Hls({ startPosition, maxBufferLength: 18, maxMaxBufferLength: 30, backBufferLength: 12, fragLoadingMaxRetry: 6 });
+      player = new Hls({
+        startPosition,
+        maxBufferLength: 36,
+        maxMaxBufferLength: 60,
+        backBufferLength: 18,
+        fragLoadingMaxRetry: 6,
+        fragLoadingRetryDelay: 500,
+        fragLoadingMaxRetryTimeout: 8_000,
+        nudgeMaxRetry: 5,
+      });
+      let networkRecoveries = 0;
+      let mediaRecoveries = 0;
       player.loadSource(resolveUrl(playbackUrl));
       player.attachMedia(media);
+      player.on(Hls.Events.FRAG_LOADED, () => { networkRecoveries = 0; });
       player.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) {
-          if (!stoppedRef.current) {
-            stoppedRef.current = true;
-            void api.reportStopped(item.Id, positionRef.current, playSessionRef.current).catch(() => {});
-          }
-          setError(`The transcoded stream failed (${data.details}).`);
+        if (!data.fatal || !player) return;
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRecoveries < 2) {
+          networkRecoveries += 1;
+          window.setTimeout(() => {
+            if (!disposed && player) player.startLoad(media.currentTime);
+          }, networkRecoveries * 500);
+          return;
         }
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries < 2) {
+          mediaRecoveries += 1;
+          player.recoverMediaError();
+          return;
+        }
+        if (!stoppedRef.current) {
+          stoppedRef.current = true;
+          void api.reportStopped(item.Id, positionRef.current, playSessionRef.current).catch(() => {});
+        }
+        setError(`The transcoded stream failed (${data.details}).`);
       });
     });
     return () => { disposed = true; player?.destroy(); };
