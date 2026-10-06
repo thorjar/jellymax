@@ -259,11 +259,26 @@ pub async fn segments(
                 .map(|value| (value, fetched_at))
         });
 
-    // A cached Jellyfin marker is the most release-specific source available.
+    // Return every fresh result immediately. Jellyfin markers are already the
+    // most release-specific source. A fresh community result is served with a
+    // background Jellyfin refresh so connected servers without marker plugins
+    // do not add a four-second network delay to every playback start.
     if let Some((value, fetched_at)) = cached.as_ref()
-        && value.get("Source").and_then(Value::as_str) == Some("Jellyfin")
         && now - fetched_at < cache_lifetime(value)
     {
+        if value.get("Source").and_then(Value::as_str) != Some("Jellyfin") {
+            let refresh_state = state.clone();
+            let refresh_item = item_id.clone();
+            tokio::spawn(async move {
+                if let Ok(Some(fresh)) =
+                    crate::remote::media_segments(&refresh_state, &refresh_item).await
+                    && let Err(error) =
+                        store_segment_cache(&refresh_state, refresh_item.clone(), &fresh, now).await
+                {
+                    tracing::warn!(%error, item=%refresh_item, "Could not cache refreshed Jellyfin media segments");
+                }
+            });
+        }
         return Ok(Json(value.clone()));
     }
 
@@ -272,12 +287,6 @@ pub async fn segments(
     // they were generated for the exact file being streamed.
     if let Some(value) = crate::remote::media_segments(&state, &item_id).await? {
         store_segment_cache(&state, item_id, &value, now).await?;
-        return Ok(Json(value));
-    }
-
-    if let Some((value, fetched_at)) = cached
-        && now - fetched_at < cache_lifetime(&value)
-    {
         return Ok(Json(value));
     }
 

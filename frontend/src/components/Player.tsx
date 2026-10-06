@@ -66,17 +66,19 @@ export function Player({ item }: PlayerProps) {
   useEffect(() => {
     let cancelled = false;
     setIntroSegments([]);
-    if (item.Type !== "Episode" || !source) return () => { cancelled = true; };
-    // Playback-info and source selection stay on the critical path. Once a
-    // source exists, prefetch markers immediately so short intros do not pass
-    // before the Skip Intro button knows about them.
-    const timer = window.setTimeout(() => {
-      void api.mediaSegments(item.Id)
-        .then((result) => { if (!cancelled) setIntroSegments(result.Intro); })
-        .catch(() => { if (!cancelled) setIntroSegments([]); });
-    }, 100);
-    return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [item.Id, item.Type, source]);
+    if (item.Type !== "Episode") return () => { cancelled = true; };
+    // Marker lookup runs alongside playback-info instead of waiting for source
+    // selection, so an intro beginning at zero has its action ready immediately.
+    void api.mediaSegments(item.Id)
+      .then((result) => {
+        if (cancelled) return;
+        setIntroSegments(result.Intro
+          .filter((segment) => segment.EndTicks > segment.StartTicks && segment.EndTicks > 0)
+          .sort((left, right) => left.StartTicks - right.StartTicks));
+      })
+      .catch(() => { if (!cancelled) setIntroSegments([]); });
+    return () => { cancelled = true; };
+  }, [item.Id, item.Type]);
 
   useEffect(() => {
     let cancelled = false;
@@ -639,8 +641,9 @@ export function Player({ item }: PlayerProps) {
             if (!fullscreen && playing && !subtitleMenuOpen && !audioMenuOpen) setControlsVisible(false);
           }}
           onFocusCapture={revealControls} onContextMenu={(event) => event.preventDefault()}>
+          <div className={fullscreen ? "contents" : "relative aspect-video w-full"}>
           <video {...commonProps} ref={mediaRef as RefObject<HTMLVideoElement>}
-            className={`${fullscreen ? "h-full w-full" : "aspect-video w-full"} bg-black object-contain ${fullscreen && !playerControlsShown ? "cursor-none" : "cursor-pointer"}`} playsInline
+            className="h-full w-full bg-black object-contain cursor-pointer" playsInline
             onClick={togglePlayback}>
             {subtitleUrl && <track ref={subtitleTrackRef} key={selectedSubtitle} kind="subtitles" src={subtitleUrl}
               srcLang={typeof selectedSubtitle === "string"
@@ -660,12 +663,13 @@ export function Player({ item }: PlayerProps) {
             <span className="rounded-md bg-black/80 px-3 py-2 text-sm text-amber-200">{subtitleError}</span>
           </div>}
           {activeIntro && <button type="button" onClick={() => seek(activeIntro.EndTicks / TICKS_PER_SECOND)}
-            className={`absolute right-4 z-20 rounded-md border border-white/70 bg-black/80 px-4 py-2 text-sm font-semibold text-white shadow-lg transition-all hover:bg-white hover:text-black focus-visible:outline-2 focus-visible:outline-brand ${playerControlsShown ? "bottom-24 sm:bottom-20" : "bottom-5 sm:bottom-7"}`}>
+            className={`absolute right-6 z-20 rounded-md border border-white/70 bg-black/80 px-4 py-2 text-sm font-semibold text-white shadow-lg transition-all hover:bg-white hover:text-black focus-visible:outline-2 focus-visible:outline-brand sm:right-8 ${fullscreen ? (playerControlsShown ? "bottom-28 sm:bottom-24" : "bottom-8 sm:bottom-10") : "bottom-5 sm:bottom-7"}`}>
             Skip Intro
           </button>}
-          {captionText && <div className={`pointer-events-none absolute inset-x-5 z-10 flex justify-center text-center transition-[bottom] duration-200 ${playerControlsShown ? "bottom-24 sm:bottom-20" : "bottom-5 sm:bottom-7"}`} aria-live="off">
+          {captionText && <div className={`pointer-events-none absolute inset-x-5 z-10 flex justify-center text-center transition-[bottom] duration-200 ${fullscreen ? (playerControlsShown ? "bottom-24 sm:bottom-20" : "bottom-5 sm:bottom-7") : "bottom-5 sm:bottom-7"}`} aria-live="off">
             <span className="max-w-[90%] whitespace-pre-line rounded bg-black/75 px-3 py-1.5 text-base font-semibold leading-snug text-white shadow-lg sm:text-lg">{captionText}</span>
           </div>}
+          </div>
           <div className={fullscreen
             ? `jellymax-player-overlay absolute inset-x-0 bottom-0 z-30 bg-linear-to-t from-black/95 via-black/75 to-transparent px-3 pb-3 pt-10 text-white transition-opacity duration-200 sm:px-5 ${playerControlsShown ? "opacity-100" : "pointer-events-none opacity-0"}`
             : "relative z-30 border-t border-edge bg-surface-raised px-3 py-3 text-white sm:px-5"}>

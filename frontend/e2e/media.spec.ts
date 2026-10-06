@@ -38,7 +38,7 @@ test("fullscreen controls return when Chromium reports pointer movement", async 
   await expect(controls).not.toHaveClass(/absolute/);
   await page.getByRole("button", { name: "Fullscreen", exact: true }).click();
   await expect.poll(() => page.evaluate(() => document.fullscreenElement?.tagName)).toBe("DIV");
-  const frame = video.locator("..");
+  const frame = video.locator("..").locator("..");
   await expect(frame).toHaveClass(/h-screen/);
   await expect.poll(async () => Math.round((await frame.boundingBox())?.height ?? 0)).toBe(800);
   await expect(controls).toHaveClass(/absolute/);
@@ -70,6 +70,30 @@ test("Windows fullscreen delegates to the browser's native video controls", asyn
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.controls)).toBe(true);
   await page.evaluate(() => document.exitFullscreen());
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.controls)).toBe(false);
+});
+
+test("Skip Intro stays inside the video and is available at playback start", async ({ page }) => {
+  await page.getByRole("navigation", { name: "Mock Jellyfin libraries" }).getByRole("link", { name: "Remote Movies" }).click();
+  await page.getByRole("link", { name: /Remote Marker Episode/ }).click();
+  await page.getByRole("link", { name: "▶ Play", exact: true }).click();
+  const video = page.locator("video");
+  await video.evaluate((element: HTMLVideoElement) => {
+    Object.defineProperty(element, "duration", { configurable: true, value: 100 });
+    element.currentTime = 2;
+    element.dispatchEvent(new Event("timeupdate"));
+  });
+  const skip = page.getByRole("button", { name: "Skip Intro", exact: true });
+  await expect(skip).toBeVisible();
+  const videoBox = await video.boundingBox();
+  const skipBox = await skip.boundingBox();
+  expect(videoBox).not.toBeNull();
+  expect(skipBox).not.toBeNull();
+  expect(skipBox!.x).toBeGreaterThan(videoBox!.x);
+  expect(skipBox!.x + skipBox!.width).toBeLessThan(videoBox!.x + videoBox!.width);
+  expect(skipBox!.y).toBeGreaterThan(videoBox!.y);
+  expect(skipBox!.y + skipBox!.height).toBeLessThan(videoBox!.y + videoBox!.height);
+  await skip.click();
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeGreaterThanOrEqual(5);
 });
 
 test("connected Jellyfin intro markers take priority", async ({ page }) => {
@@ -171,7 +195,7 @@ test("OpenSubtitles authorization errors identify search and download failures",
   await expect(page.getByText(/rejected the API key during search \(401\).*API key not authorized for search/)).toBeVisible();
 });
 
-test("captions sit lower after custom controls disappear", async ({ page }) => {
+test("windowed captions stay inside the video viewport", async ({ page }) => {
   await page.getByRole("navigation", { name: "Jellymax libraries" }).getByRole("link", { name: "Movies" }).click();
   await page.getByRole("link", { name: /Windowed Subtitles/ }).click();
   await page.getByRole("link", { name: "▶ Play", exact: true }).click();
@@ -181,10 +205,12 @@ test("captions sit lower after custom controls disappear", async ({ page }) => {
   await page.getByRole("menuitemradio", { name: /Unknown language/ }).click();
   await video.evaluate((element: HTMLVideoElement) => { element.currentTime = 2; });
   const caption = page.getByText("Opening caption", { exact: true }).locator("..");
-  await expect(caption).toHaveClass(/bottom-24/);
-  await video.hover();
-  await page.mouse.move(0, 0);
   await expect(caption).toHaveClass(/bottom-5/);
+  const videoBox = await video.boundingBox();
+  const captionBox = await caption.boundingBox();
+  expect(videoBox).not.toBeNull();
+  expect(captionBox).not.toBeNull();
+  expect(captionBox!.y + captionBox!.height).toBeLessThan(videoBox!.y + videoBox!.height);
 });
 
 test("Chromium keeps subtitles visible above controls during HLS playback", async ({ page }) => {
