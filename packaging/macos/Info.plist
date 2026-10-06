@@ -5,7 +5,7 @@
   <key>CFBundleDisplayName</key><string>Jellymax</string>
   <key>CFBundleIdentifier</key><string>dev.jaret.jellymax</string>
   <key>CFBundleVersion</key><string>1</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>0.1.1</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>Jellymax</string>
   <key>CFBundleIconFile</key><string>Jellymax.icns</string>
