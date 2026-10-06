@@ -41,14 +41,20 @@ jobs:
           cp -R frontend/dist/. "$APP/Contents/Resources/web/"
           ln -s /Applications dist/dmg-root/Applications
           hdiutil create -volname Jellymax -srcfolder dist/dmg-root -ov -format UDZO dist/Jellymax-macOS-arm64.dmg
+          cd dist
+          shasum -a 256 Jellymax-macOS-arm64.dmg > Jellymax-macOS-arm64.dmg.sha256
       - uses: actions/upload-artifact@v7
         with:
           name: Jellymax-macOS-arm64
-          path: dist/Jellymax-macOS-arm64.dmg
+          path: |
+            dist/Jellymax-macOS-arm64.dmg
+            dist/Jellymax-macOS-arm64.dmg.sha256
       - uses: softprops/action-gh-release@v3
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: dist/Jellymax-macOS-arm64.dmg
+          files: |
+            dist/Jellymax-macOS-arm64.dmg
+            dist/Jellymax-macOS-arm64.dmg.sha256
 
   windows:
     runs-on: windows-2022
@@ -111,11 +117,17 @@ jobs:
             Get-Content C:\ProgramData\Jellymax\logs\server-error.log -Tail 80 -ErrorAction SilentlyContinue
             throw "Installed Jellymax service is unhealthy"
           }
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  Jellymax-Windows-x64.exe" | Set-Content dist/Jellymax-Windows-x64.exe.sha256 -Encoding ascii
       - uses: actions/upload-artifact@v7
         with:
           name: Jellymax-Windows-x64
-          path: dist/Jellymax-Windows-x64.exe
+          path: |
+            dist/Jellymax-Windows-x64.exe
+            dist/Jellymax-Windows-x64.exe.sha256
       - uses: softprops/action-gh-release@v3
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: dist/Jellymax-Windows-x64.exe
+          files: |
+            dist/Jellymax-Windows-x64.exe
+            dist/Jellymax-Windows-x64.exe.sha256
