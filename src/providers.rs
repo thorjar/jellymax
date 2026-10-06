@@ -320,27 +320,25 @@ pub async fn segments(
     if let Some(key) = state.provider_key("introdb") {
         request = request.bearer_auth(key);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|_| Error(StatusCode::BAD_GATEWAY, "TheIntroDB is unavailable".into()))?;
-    let value = if response.status() == reqwest::StatusCode::NOT_FOUND {
-        json!({"Intro":[],"Source":"TheIntroDB"})
-    } else {
-        if !response.status().is_success() {
-            return Err(Error(
-                StatusCode::BAD_GATEWAY,
-                format!("TheIntroDB request failed ({})", response.status()),
-            ));
+    let value = match request.send().await {
+        Ok(response) if response.status() == reqwest::StatusCode::NOT_FOUND => {
+            json!({"Intro":[],"Source":"TheIntroDB"})
         }
-        let body: Value = response.json().await.map_err(|_| {
-            Error(
-                StatusCode::BAD_GATEWAY,
-                "TheIntroDB returned an invalid response".into(),
-            )
-        })?;
-        let intro = intro_segments(&body);
-        json!({"Intro":intro,"Source":"TheIntroDB"})
+        Ok(response) if response.status().is_success() => match response.json::<Value>().await {
+            Ok(body) => json!({"Intro":intro_segments(&body),"Source":"TheIntroDB"}),
+            Err(error) => {
+                tracing::warn!(%error, item=%item_id, "TheIntroDB returned an invalid response");
+                json!({"Intro":[],"Source":"None"})
+            }
+        },
+        Ok(response) => {
+            tracing::warn!(status=%response.status(), item=%item_id, "TheIntroDB marker lookup failed");
+            json!({"Intro":[],"Source":"None"})
+        }
+        Err(error) => {
+            tracing::warn!(%error, item=%item_id, "TheIntroDB marker lookup unavailable");
+            json!({"Intro":[],"Source":"None"})
+        }
     };
     store_segment_cache(&state, item_id, &value, now).await?;
     Ok(Json(value))

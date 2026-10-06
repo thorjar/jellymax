@@ -44,6 +44,7 @@ export function Player({ item }: PlayerProps) {
   const [captionText, setCaptionText] = useState("");
   const [pictureInPicture, setPictureInPicture] = useState(false);
   const [introSegments, setIntroSegments] = useState<MediaSegment[]>([]);
+  const [playbackStartedItem, setPlaybackStartedItem] = useState<string | null>(null);
   const mediaRef = useRef<HTMLMediaElement | null>(null);
   const subtitleTrackRef = useRef<HTMLTrackElement | null>(null);
   const subtitleCuesRef = useRef<SubtitleCue[]>([]);
@@ -64,21 +65,28 @@ export function Player({ item }: PlayerProps) {
   useEffect(() => () => window.clearTimeout(controlsTimer.current), []);
 
   useEffect(() => {
-    let cancelled = false;
     setIntroSegments([]);
-    if (item.Type !== "Episode") return () => { cancelled = true; };
-    // Marker lookup runs alongside playback-info instead of waiting for source
-    // selection, so an intro beginning at zero has its action ready immediately.
-    void api.mediaSegments(item.Id)
-      .then((result) => {
-        if (cancelled) return;
-        setIntroSegments(result.Intro
-          .filter((segment) => segment.EndTicks > segment.StartTicks && segment.EndTicks > 0)
-          .sort((left, right) => left.StartTicks - right.StartTicks));
-      })
-      .catch(() => { if (!cancelled) setIntroSegments([]); });
-    return () => { cancelled = true; };
-  }, [item.Id, item.Type]);
+    setPlaybackStartedItem(null);
+  }, [item.Id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (item.Type !== "Episode" || playbackStartedItem !== item.Id) return () => { cancelled = true; };
+    // Playback owns the startup path. Marker discovery starts only after the
+    // media element has successfully begun playing, so a slow or unavailable
+    // provider cannot contend with the first HLS segment.
+    const timer = window.setTimeout(() => {
+      void api.mediaSegments(item.Id)
+        .then((result) => {
+          if (cancelled) return;
+          setIntroSegments(result.Intro
+            .filter((segment) => segment.EndTicks > segment.StartTicks && segment.EndTicks > 0)
+            .sort((left, right) => left.StartTicks - right.StartTicks));
+        })
+        .catch(() => { if (!cancelled) setIntroSegments([]); });
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [item.Id, item.Type, playbackStartedItem]);
 
   useEffect(() => {
     let cancelled = false;
@@ -568,6 +576,7 @@ export function Player({ item }: PlayerProps) {
       }
       updatePosition();
       setPlaying(true);
+      setPlaybackStartedItem(item.Id);
       setPlaybackNotice(null);
     },
     onPause: () => {

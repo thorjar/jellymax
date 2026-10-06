@@ -72,17 +72,19 @@ test("Windows fullscreen delegates to the browser's native video controls", asyn
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.controls)).toBe(false);
 });
 
-test("Skip Intro stays inside the video and is available at playback start", async ({ page }) => {
+test("Skip Intro loads only after playback starts and stays inside the video", async ({ page }) => {
   await page.getByRole("navigation", { name: "Mock Jellyfin libraries" }).getByRole("link", { name: "Remote Movies" }).click();
   await page.getByRole("link", { name: /Remote Marker Episode/ }).click();
   await page.getByRole("link", { name: "▶ Play", exact: true }).click();
   const video = page.locator("video");
+  const skip = page.getByRole("button", { name: "Skip Intro", exact: true });
+  await expect(skip).toHaveCount(0);
   await video.evaluate((element: HTMLVideoElement) => {
     Object.defineProperty(element, "duration", { configurable: true, value: 100 });
+    element.dispatchEvent(new Event("play"));
     element.currentTime = 2;
     element.dispatchEvent(new Event("timeupdate"));
   });
-  const skip = page.getByRole("button", { name: "Skip Intro", exact: true });
   await expect(skip).toBeVisible();
   const videoBox = await video.boundingBox();
   const skipBox = await skip.boundingBox();
