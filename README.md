@@ -130,6 +130,4 @@ The **Build native installers** GitHub Actions workflow produces:
 - a macOS Apple Silicon `.dmg` whose launcher installs a per-user `launchd` service;
 - a Windows x64 `.exe` installer which uses NSSM to install an automatic Windows service.
 
-Download native installers from the repository's **Releases** page. GitHub Actions artifacts are intended for build verification and are always delivered inside a newly generated ZIP, which browsers may classify as an uncommon executable archive. Each release includes a SHA-256 checksum beside the raw installer.
-
-These installers are currently unsigned and may still trigger Gatekeeper, Chrome Safe Browsing, or SmartScreen warnings until Apple signing/notarization and Windows Authenticode signing are configured. Docker remains a separate supported deployment and continues using the explicit `/data` and `/srv` paths in its existing images.
+These unsigned development installers may trigger Gatekeeper or SmartScreen warnings. Public releases should add Apple signing/notarization and Windows Authenticode signing secrets. Docker remains a separate supported deployment and continues using the explicit `/data` and `/srv` paths in its existing images.

@@ -331,7 +331,6 @@ async fn scan(state: &AppState) -> Result<()> {
             state.scan_status.write().await.removed += (removed + duplicates) as u64;
         }
     }
-    crate::providers::schedule_all_segment_caches(state).await?;
     Ok(())
 }
 

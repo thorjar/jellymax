@@ -13,8 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    sync::OnceLock,
-    time::{Duration, Instant},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const INTRODB_API: &str = "https://api.theintrodb.org/v3";
@@ -157,23 +156,14 @@ pub async fn update(
     get(auth, State(state)).await
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct Segment {
     start_ticks: i64,
     end_ticks: i64,
 }
 
-#[derive(Clone)]
-struct SegmentLookup {
-    item_id: String,
-    tmdb_id: Option<String>,
-    season: i64,
-    episode: i64,
-    duration_ticks: Option<i64>,
-}
-
-fn the_intro_db_segments(body: &Value) -> Vec<Segment> {
+fn intro_segments(body: &Value) -> Vec<Segment> {
     body.get("intro")
         .and_then(Value::as_array)
         .into_iter()
@@ -201,11 +191,13 @@ fn cache_lifetime(value: &Value) -> i64 {
     {
         SEGMENT_CACHE_SECONDS
     } else {
+        // New server/plugin analysis and corrected community submissions should
+        // become visible quickly. An empty result is not authoritative.
         5 * 60
     }
 }
 
-pub(crate) async fn store_segment_cache(
+async fn store_segment_cache(
     state: &AppState,
     item_id: String,
     value: &Value,
@@ -225,220 +217,29 @@ pub(crate) async fn store_segment_cache(
         .await
 }
 
-static INTRO_DB_NEXT_REQUEST: OnceLock<tokio::sync::Mutex<Instant>> = OnceLock::new();
-
-async fn wait_for_intro_db_rate_limit() {
-    let gate = INTRO_DB_NEXT_REQUEST.get_or_init(|| tokio::sync::Mutex::new(Instant::now()));
-    let mut next = gate.lock().await;
-    let now = Instant::now();
-    if *next > now {
-        tokio::time::sleep(*next - now).await;
-    }
-    // TheIntroDB permits roughly 30 requests per 10 seconds. Keep the same
-    // safety margin as its official Jellyfin plugin: 25 per 10 seconds.
-    *next = Instant::now() + Duration::from_millis(400);
-}
-
-async fn postpone_intro_db_requests(delay: Duration) {
-    let gate = INTRO_DB_NEXT_REQUEST.get_or_init(|| tokio::sync::Mutex::new(Instant::now()));
-    let mut next = gate.lock().await;
-    let retry = Instant::now() + delay.min(Duration::from_secs(24 * 60 * 60));
-    if retry > *next {
-        *next = retry;
-    }
-}
-
-fn intro_db_retry_after(headers: &reqwest::header::HeaderMap) -> Duration {
-    for name in ["x-usage-limit-reset", "retry-after", "x-ratelimit-reset"] {
-        if let Some(seconds) = headers
-            .get(name)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|seconds| *seconds > 0)
-        {
-            return Duration::from_secs(seconds.min(24 * 60 * 60));
-        }
-    }
-    Duration::from_secs(5 * 60)
-}
-
-async fn the_intro_db(state: &AppState, lookup: &SegmentLookup) -> Option<Vec<Segment>> {
-    let tmdb = lookup.tmdb_id.as_deref()?;
-    if !tmdb.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let base = if cfg!(debug_assertions) {
-        std::env::var("JELLYMAX_INTRODB_TEST_BASE").unwrap_or_else(|_| INTRODB_API.into())
-    } else {
-        INTRODB_API.into()
-    };
-    wait_for_intro_db_rate_limit().await;
-    let mut request = state
-        .http
-        .get(format!("{base}/media"))
-        .timeout(std::time::Duration::from_secs(4))
-        .query(&[
-            ("tmdb_id", tmdb.to_owned()),
-            ("season", lookup.season.to_string()),
-            ("episode", lookup.episode.to_string()),
-            (
-                "duration_ms",
-                lookup
-                    .duration_ticks
-                    .unwrap_or(0)
-                    .saturating_div(10_000)
-                    .to_string(),
-            ),
-        ]);
-    if let Some(key) = state.provider_key("introdb") {
-        request = request.bearer_auth(key);
-    }
-    let response = request.send().await.ok()?;
-    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        let delay = intro_db_retry_after(response.headers());
-        postpone_intro_db_requests(delay).await;
-        tracing::warn!(retry_after_seconds=delay.as_secs(), item=%lookup.item_id, "TheIntroDB rate limit reached; marker refresh paused");
-        return None;
-    }
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Some(vec![]);
-    }
-    if !response.status().is_success() {
-        tracing::warn!(status=%response.status(), item=%lookup.item_id, "TheIntroDB marker lookup failed");
-        return None;
-    }
-    match response.json::<Value>().await {
-        Ok(body) => Some(the_intro_db_segments(&body)),
-        Err(error) => {
-            tracing::warn!(%error, item=%lookup.item_id, "TheIntroDB returned an invalid response");
-            None
-        }
-    }
-}
-
-async fn refresh_segment_cache(state: &AppState, lookup: SegmentLookup) -> Result<()> {
-    match the_intro_db(state, &lookup).await {
-        Some(intro) if !intro.is_empty() => {
-            store_segment_cache(
-                state,
-                lookup.item_id,
-                &json!({"Intro": intro, "Source": "TheIntroDB"}),
-                crate::auth::now(),
-            )
-            .await
-        }
-        Some(_) => {
-            store_segment_cache(
-                state,
-                lookup.item_id,
-                &json!({"Intro": [], "Source": "None"}),
-                crate::auth::now(),
-            )
-            .await
-        }
-        // A provider outage must not erase a previously working marker.
-        None => Ok(()),
-    }
-}
-
-async fn segment_lookup(state: &AppState, item_id: String) -> Result<Option<SegmentLookup>> {
-    state
-        .db
-        .call(move |db| {
-            Ok(db
-                .query_row(
-                    "SELECT i.id,series.tmdb_id,i.parent_index_number,i.index_number,i.runtime_ticks
-                     FROM items i
-                     JOIN items season ON season.id=i.parent_id
-                     JOIN items series ON series.id=season.parent_id
-                     WHERE i.id=?1 AND i.kind='Episode'
-                       AND i.parent_index_number IS NOT NULL AND i.index_number IS NOT NULL",
-                    [item_id],
-                    |row| {
-                        Ok(SegmentLookup {
-                            item_id: row.get(0)?,
-                            tmdb_id: row.get(1)?,
-                            season: row.get(2)?,
-                            episode: row.get(3)?,
-                            duration_ticks: row.get(4)?,
-                        })
-                    },
-                )
-                .optional()?)
-        })
-        .await
-}
-
-pub(crate) async fn schedule_all_segment_caches(state: &AppState) -> Result<()> {
-    let now = crate::auth::now();
-    let lookups = state
-        .db
-        .call(move |db| {
-            let mut query = db.prepare(
-                "SELECT i.id,series.tmdb_id,i.parent_index_number,i.index_number,i.runtime_ticks,m.payload,m.fetched_at
-                 FROM items i
-                 JOIN items season ON season.id=i.parent_id
-                 JOIN items series ON series.id=season.parent_id
-                 LEFT JOIN media_segments m ON m.item_id=i.id
-                 WHERE i.kind='Episode' AND i.parent_index_number IS NOT NULL AND i.index_number IS NOT NULL",
-            )?;
-            let rows = query
-                .query_map([], |row| {
-                    let payload = row
-                        .get::<_, Option<String>>(5)?
-                        .and_then(|value| serde_json::from_str::<Value>(&value).ok());
-                    let fetched_at = row.get::<_, Option<i64>>(6)?;
-                    Ok((
-                        SegmentLookup {
-                            item_id: row.get(0)?,
-                            tmdb_id: row.get(1)?,
-                            season: row.get(2)?,
-                            episode: row.get(3)?,
-                            duration_ticks: row.get(4)?,
-                        },
-                        payload,
-                        fetched_at,
-                    ))
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })
-        .await?;
-    let state = state.clone();
-    tokio::spawn(async move {
-        use futures_util::StreamExt;
-        futures_util::stream::iter(
-            lookups
-                .into_iter()
-                .filter_map(|(lookup, payload, fetched)| {
-                    let fresh = payload.as_ref().is_some_and(|value| {
-                        matches!(
-                            value.get("Source").and_then(Value::as_str),
-                            Some("TheIntroDB") | Some("None")
-                        ) && fetched
-                            .is_some_and(|time| time >= now.saturating_sub(cache_lifetime(value)))
-                    });
-                    (!fresh).then_some(lookup)
-                }),
-        )
-        .for_each_concurrent(2, |lookup| {
-            let state = state.clone();
-            async move {
-                if let Err(error) = refresh_segment_cache(&state, lookup.clone()).await {
-                    tracing::warn!(%error, item=%lookup.item_id, "Could not cache intro markers");
-                }
-            }
-        })
-        .await;
-    });
-    Ok(())
-}
-
 pub async fn segments(
     _auth: Auth,
     State(state): State<AppState>,
     Path(item_id): Path<String>,
 ) -> Result<Json<Value>> {
+    let lookup_id = item_id.clone();
+    let metadata: (Option<String>, Option<i64>, Option<i64>, Option<i64>) = state
+        .db
+        .call(move |db| {
+            db.query_row(
+                "SELECT (SELECT tmdb_id FROM items series WHERE series.id=(SELECT parent_id FROM items season WHERE season.id=i.parent_id)),i.parent_index_number,i.index_number,i.runtime_ticks
+                 FROM items i WHERE i.id=?1 AND i.kind='Episode'",
+                [lookup_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?
+            .ok_or_else(Error::missing)
+        })
+        .await?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
     let cache_id = item_id.clone();
     let cached = state
         .db
@@ -456,29 +257,84 @@ pub async fn segments(
             serde_json::from_str::<Value>(&payload)
                 .ok()
                 .map(|value| (value, fetched_at))
-        })
-        .filter(|(value, _)| {
-            matches!(
-                value.get("Source").and_then(Value::as_str),
-                Some("TheIntroDB") | Some("None")
-            )
         });
-    let stale = cached
-        .as_ref()
-        .is_none_or(|(value, fetched_at)| crate::auth::now() - fetched_at >= cache_lifetime(value));
-    if stale && let Some(lookup) = segment_lookup(&state, item_id).await? {
-        let state = state.clone();
-        tokio::spawn(async move {
-            if let Err(error) = refresh_segment_cache(&state, lookup.clone()).await {
-                tracing::warn!(%error, item=%lookup.item_id, "Could not refresh intro markers");
-            }
-        });
+
+    // A cached Jellyfin marker is the most release-specific source available.
+    if let Some((value, fetched_at)) = cached.as_ref()
+        && value.get("Source").and_then(Value::as_str) == Some("Jellyfin")
+        && now - fetched_at < cache_lifetime(value)
+    {
+        return Ok(Json(value.clone()));
     }
-    Ok(Json(
-        cached
-            .map(|(value, _)| value)
-            .unwrap_or_else(|| json!({"Intro": [], "Source": "None"})),
-    ))
+
+    // Connected Jellyfin 10.10+ servers expose plugin-generated markers at
+    // /MediaSegments/{itemId}. Prefer these over community timestamps because
+    // they were generated for the exact file being streamed.
+    if let Some(value) = crate::remote::media_segments(&state, &item_id).await? {
+        store_segment_cache(&state, item_id, &value, now).await?;
+        return Ok(Json(value));
+    }
+
+    if let Some((value, fetched_at)) = cached
+        && now - fetched_at < cache_lifetime(&value)
+    {
+        return Ok(Json(value));
+    }
+
+    let (Some(tmdb_id), Some(season), Some(episode), duration_ticks) = metadata else {
+        return Ok(Json(json!({"Intro":[],"Source":"None"})));
+    };
+    if !tmdb_id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok(Json(json!({"Intro":[],"Source":"None"})));
+    }
+    let base = if cfg!(debug_assertions) {
+        std::env::var("JELLYMAX_INTRODB_TEST_BASE").unwrap_or_else(|_| INTRODB_API.into())
+    } else {
+        INTRODB_API.into()
+    };
+    let mut request = state
+        .http
+        .get(format!("{base}/media"))
+        .timeout(std::time::Duration::from_secs(4))
+        .query(&[
+            ("tmdb_id", tmdb_id),
+            ("season", season.to_string()),
+            ("episode", episode.to_string()),
+            (
+                "duration_ms",
+                duration_ticks
+                    .unwrap_or(0)
+                    .saturating_div(10_000)
+                    .to_string(),
+            ),
+        ]);
+    if let Some(key) = state.provider_key("introdb") {
+        request = request.bearer_auth(key);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|_| Error(StatusCode::BAD_GATEWAY, "TheIntroDB is unavailable".into()))?;
+    let value = if response.status() == reqwest::StatusCode::NOT_FOUND {
+        json!({"Intro":[],"Source":"TheIntroDB"})
+    } else {
+        if !response.status().is_success() {
+            return Err(Error(
+                StatusCode::BAD_GATEWAY,
+                format!("TheIntroDB request failed ({})", response.status()),
+            ));
+        }
+        let body: Value = response.json().await.map_err(|_| {
+            Error(
+                StatusCode::BAD_GATEWAY,
+                "TheIntroDB returned an invalid response".into(),
+            )
+        })?;
+        let intro = intro_segments(&body);
+        json!({"Intro":intro,"Source":"TheIntroDB"})
+    };
+    store_segment_cache(&state, item_id, &value, now).await?;
+    Ok(Json(value))
 }
 
 #[cfg(test)]
@@ -495,14 +351,15 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_the_intro_db_ranges_and_ignores_invalid_ones() {
+    fn normalizes_introdb_ranges_and_ignores_invalid_ones() {
         let body = json!({"intro":[
             {"start_ms":null,"end_ms":23_000},
             {"start_ms":30_000,"end_ms":90_000},
-            {"start_ms":50_000,"end_ms":40_000}
+            {"start_ms":50_000,"end_ms":40_000},
+            {"start_ms":10_000,"end_ms":null}
         ]});
         assert_eq!(
-            the_intro_db_segments(&body),
+            intro_segments(&body),
             vec![
                 Segment {
                     start_ticks: 0,
@@ -514,15 +371,6 @@ mod tests {
                 },
             ]
         );
-    }
-
-    #[test]
-    fn honors_the_intro_db_retry_headers() {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("retry-after", "7".parse().unwrap());
-        assert_eq!(intro_db_retry_after(&headers), Duration::from_secs(7));
-        headers.insert("x-usage-limit-reset", "3600".parse().unwrap());
-        assert_eq!(intro_db_retry_after(&headers), Duration::from_secs(3600));
     }
 
     #[test]

@@ -23,7 +23,6 @@ export function Player({ item }: PlayerProps) {
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
-  const [nativeFullscreenControls, setNativeFullscreenControls] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [subtitleMenuOpen, setSubtitleMenuOpen] = useState(false);
   const [audioMenuOpen, setAudioMenuOpen] = useState(false);
@@ -44,7 +43,6 @@ export function Player({ item }: PlayerProps) {
   const [captionText, setCaptionText] = useState("");
   const [pictureInPicture, setPictureInPicture] = useState(false);
   const [introSegments, setIntroSegments] = useState<MediaSegment[]>([]);
-  const [playbackStartedItem, setPlaybackStartedItem] = useState<string | null>(null);
   const mediaRef = useRef<HTMLMediaElement | null>(null);
   const subtitleTrackRef = useRef<HTMLTrackElement | null>(null);
   const subtitleCuesRef = useRef<SubtitleCue[]>([]);
@@ -60,32 +58,23 @@ export function Player({ item }: PlayerProps) {
   const stoppedRef = useRef(true);
   const playSessionRef = useRef<string | undefined>(undefined);
   const isAudio = item.MediaType === "Audio";
-  const useWindowsNativeFullscreen = /Windows/i.test(navigator.userAgent);
 
   useEffect(() => () => window.clearTimeout(controlsTimer.current), []);
 
   useEffect(() => {
-    setIntroSegments([]);
-    setPlaybackStartedItem(null);
-  }, [item.Id]);
-
-  useEffect(() => {
     let cancelled = false;
-    if (item.Type !== "Episode" || playbackStartedItem !== item.Id) return () => { cancelled = true; };
-    // Intro discovery is optional. Give playback time to establish its forward
-    // buffer before making another request to the same remote media server.
+    setIntroSegments([]);
+    if (item.Type !== "Episode" || !source) return () => { cancelled = true; };
+    // Playback-info and source selection stay on the critical path. Once a
+    // source exists, prefetch markers immediately so short intros do not pass
+    // before the Skip Intro button knows about them.
     const timer = window.setTimeout(() => {
       void api.mediaSegments(item.Id)
-        .then((result) => {
-          if (cancelled) return;
-          setIntroSegments(result.Intro
-            .filter((segment) => segment.EndTicks > segment.StartTicks && segment.EndTicks > 0)
-            .sort((left, right) => left.StartTicks - right.StartTicks));
-        })
+        .then((result) => { if (!cancelled) setIntroSegments(result.Intro); })
         .catch(() => { if (!cancelled) setIntroSegments([]); });
-    }, 5_000);
+    }, 100);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [item.Id, item.Type, playbackStartedItem]);
+  }, [item.Id, item.Type, source]);
 
   useEffect(() => {
     let cancelled = false;
@@ -161,18 +150,12 @@ export function Player({ item }: PlayerProps) {
 
   useEffect(() => {
     const onFullscreenChange = () => {
-      const video = mediaRef.current;
-      const nativeVideoFullscreen = useWindowsNativeFullscreen
-        && video instanceof HTMLVideoElement
-        && document.fullscreenElement === video;
-      setFullscreen(document.fullscreenElement === frameRef.current || nativeVideoFullscreen);
-      setNativeFullscreenControls(nativeVideoFullscreen);
-      if (video instanceof HTMLVideoElement) video.controls = nativeVideoFullscreen;
+      setFullscreen(document.fullscreenElement === frameRef.current);
       setControlsVisible(true);
     };
     document.addEventListener("fullscreenchange", onFullscreenChange);
     return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
-  }, [useWindowsNativeFullscreen]);
+  }, []);
 
   useEffect(() => {
     if (!fullscreen || !playing || subtitleMenuOpen || audioMenuOpen) return;
@@ -225,21 +208,13 @@ export function Player({ item }: PlayerProps) {
     const video = mediaRef.current;
     if (!(video instanceof HTMLVideoElement)) return;
     // WebKit can add native controls through its media context menu. Keep the
-    // custom player in control except when Windows fullscreen intentionally
-    // delegates to the browser's compositor and native media controls.
-    const syncNativeControls = () => {
-      const expected = useWindowsNativeFullscreen && document.fullscreenElement === video;
-      if (video.controls !== expected) video.controls = expected;
-    };
-    syncNativeControls();
-    const observer = new MutationObserver(syncNativeControls);
+    // custom video player in control even if the attribute is changed later.
+    const hideNativeControls = () => { if (video.controls) video.controls = false; };
+    hideNativeControls();
+    const observer = new MutationObserver(hideNativeControls);
     observer.observe(video, { attributes: true, attributeFilter: ["controls"] });
-    document.addEventListener("fullscreenchange", syncNativeControls);
-    return () => {
-      observer.disconnect();
-      document.removeEventListener("fullscreenchange", syncNativeControls);
-    };
-  }, [source, playbackUrl, useWindowsNativeFullscreen]);
+    return () => observer.disconnect();
+  }, [source, playbackUrl]);
 
   useEffect(() => {
     if (selectedSubtitle === null || !source) {
@@ -460,16 +435,7 @@ export function Player({ item }: PlayerProps) {
 
   async function toggleFullscreen() {
     if (document.fullscreenElement) await document.exitFullscreen();
-    else if (useWindowsNativeFullscreen && mediaRef.current instanceof HTMLVideoElement) {
-      const video = mediaRef.current;
-      video.controls = true;
-      try {
-        await video.requestFullscreen();
-      } catch {
-        video.controls = false;
-        if (frameRef.current?.requestFullscreen) await frameRef.current.requestFullscreen();
-      }
-    } else if (frameRef.current?.requestFullscreen) await frameRef.current.requestFullscreen();
+    else if (frameRef.current?.requestFullscreen) await frameRef.current.requestFullscreen();
     else if (mediaRef.current instanceof HTMLVideoElement) {
       const video = mediaRef.current as HTMLVideoElement & { webkitEnterFullscreen?: () => void };
       video.webkitEnterFullscreen?.();
@@ -500,40 +466,17 @@ export function Player({ item }: PlayerProps) {
       if (disposed) return;
       if (!Hls.isSupported()) { setError("This browser cannot play the transcoded HLS stream."); return; }
       const startPosition = switchPositionRef.current ?? ticksToSeconds(item.UserData?.Played ? 0 : item.UserData?.PlaybackPositionTicks);
-      player = new Hls({
-        startPosition,
-        maxBufferLength: 36,
-        maxMaxBufferLength: 60,
-        backBufferLength: 18,
-        fragLoadingMaxRetry: 6,
-        fragLoadingRetryDelay: 500,
-        fragLoadingMaxRetryTimeout: 8_000,
-        nudgeMaxRetry: 5,
-      });
-      let networkRecoveries = 0;
-      let mediaRecoveries = 0;
+      player = new Hls({ startPosition, maxBufferLength: 18, maxMaxBufferLength: 30, backBufferLength: 12, fragLoadingMaxRetry: 6 });
       player.loadSource(resolveUrl(playbackUrl));
       player.attachMedia(media);
-      player.on(Hls.Events.FRAG_LOADED, () => { networkRecoveries = 0; });
       player.on(Hls.Events.ERROR, (_event, data) => {
-        if (!data.fatal || !player) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRecoveries < 2) {
-          networkRecoveries += 1;
-          window.setTimeout(() => {
-            if (!disposed && player) player.startLoad(media.currentTime);
-          }, networkRecoveries * 500);
-          return;
+        if (data.fatal) {
+          if (!stoppedRef.current) {
+            stoppedRef.current = true;
+            void api.reportStopped(item.Id, positionRef.current, playSessionRef.current).catch(() => {});
+          }
+          setError(`The transcoded stream failed (${data.details}).`);
         }
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries < 2) {
-          mediaRecoveries += 1;
-          player.recoverMediaError();
-          return;
-        }
-        if (!stoppedRef.current) {
-          stoppedRef.current = true;
-          void api.reportStopped(item.Id, positionRef.current, playSessionRef.current).catch(() => {});
-        }
-        setError(`The transcoded stream failed (${data.details}).`);
       });
     });
     return () => { disposed = true; player?.destroy(); };
@@ -588,7 +531,7 @@ export function Player({ item }: PlayerProps) {
       setSubtitleWindowStart(Math.floor(media.currentTime / 45) * 45);
   };
   const commonProps = {
-    src: nativeSrc, controls: isAudio || nativeFullscreenControls, autoPlay: true, preload: "auto" as const,
+    src: nativeSrc, controls: isAudio, autoPlay: true, preload: "auto" as const,
     onPlay: () => {
       const media = mediaRef.current;
       const pausedAt = pausedPositionRef.current;
@@ -598,7 +541,6 @@ export function Player({ item }: PlayerProps) {
       }
       updatePosition();
       setPlaying(true);
-      setPlaybackStartedItem(item.Id);
       setPlaybackNotice(null);
     },
     onPause: () => {

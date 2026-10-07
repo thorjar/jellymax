@@ -1,7 +1,7 @@
 [Setup]
 AppId={{CC591448-50D1-4F11-B447-808A3028C4A2}
 AppName=Jellymax
-AppVersion=0.1.3
+AppVersion=0.1.0
 DefaultDirName={autopf}\Jellymax
 DefaultGroupName=Jellymax
 OutputDir=..\..\dist

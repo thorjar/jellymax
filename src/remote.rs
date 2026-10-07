@@ -390,6 +390,65 @@ pub(crate) async fn for_item(
     state.db.call(move|c|Ok(c.query_row("SELECT s.id,s.base_url,s.user_id,s.access_token,s.device_id,i.remote_item_id FROM items i JOIN remote_servers s ON s.id=i.remote_server_id WHERE i.id=?1",[item],|r|Ok((RemoteServer{id:r.get(0)?,base_url:r.get(1)?,user_id:r.get(2)?,token:r.get(3)?,device_id:r.get(4)?},r.get(5)?))).optional()?)).await
 }
 
+/// Read intro markers exposed by Jellyfin 10.10+ for a connected item.
+/// Missing/unsupported endpoints and empty responses return `None` so callers
+/// can fall back to community providers without breaking playback.
+pub(crate) async fn media_segments(state: &AppState, item: &str) -> Result<Option<Value>> {
+    let Some((server, remote_item)) = for_item(state, item).await? else {
+        return Ok(None);
+    };
+    let mut url = endpoint(&server, &format!("MediaSegments/{remote_item}"))?;
+    url.query_pairs_mut()
+        .append_pair("includeSegmentTypes", "Intro");
+    let response = match authorized(state.http.get(url), &server)
+        .timeout(std::time::Duration::from_secs(4))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(%error, item, "Could not read remote Jellyfin media segments");
+            return Ok(None);
+        }
+    };
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        tracing::warn!(status=%response.status(), item, "Remote Jellyfin media segments unavailable");
+        return Ok(None);
+    }
+    let body: Value = match response.json().await {
+        Ok(body) => body,
+        Err(error) => {
+            tracing::warn!(%error, item, "Remote Jellyfin media segments response was invalid");
+            return Ok(None);
+        }
+    };
+    let intro = jellyfin_intro_segments(&body);
+    if intro.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(json!({"Intro": intro, "Source": "Jellyfin"})))
+}
+
+fn jellyfin_intro_segments(body: &Value) -> Vec<Value> {
+    let mut segments = body
+        .get("Items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.get("Type").and_then(Value::as_str) == Some("Intro"))
+        .filter_map(|entry| {
+            let start = entry.get("StartTicks").and_then(Value::as_i64)?.max(0);
+            let end = entry.get("EndTicks").and_then(Value::as_i64)?;
+            (end > start).then(|| json!({"StartTicks": start, "EndTicks": end}))
+        })
+        .collect::<Vec<_>>();
+    segments.sort_by_key(|segment| segment["StartTicks"].as_i64().unwrap_or_default());
+    segments
+}
+
 async fn sync_server(state: &AppState, server: &RemoteServer) -> Result<usize> {
     // Views is scoped to the connected user. Unlike Library/VirtualFolders it
     // does not require the remote account to be a server administrator.
@@ -474,7 +533,6 @@ async fn sync_server(state: &AppState, server: &RemoteServer) -> Result<usize> {
         tx.execute("UPDATE remote_servers SET last_sync=?1,last_error=NULL WHERE id=?2",params![now(),source])?;
         tx.commit()?; Ok(())
     }).await?;
-    crate::providers::schedule_all_segment_caches(state).await?;
     Ok(count)
 }
 
@@ -922,6 +980,26 @@ mod tests {
         ] {
             assert!(normalize_url(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn normalizes_jellyfin_intro_markers() {
+        let body = json!({"Items": [
+            {"Type":"Outro","StartTicks":900,"EndTicks":1000},
+            {"Type":"Intro","StartTicks":300,"EndTicks":800},
+            {"Type":"Intro","StartTicks":100,"EndTicks":250},
+            {"Type":"Intro","StartTicks":500,"EndTicks":400},
+            {"Type":"Intro","StartTicks":-20,"EndTicks":50}
+        ]});
+        assert_eq!(
+            jellyfin_intro_segments(&body),
+            vec![
+                json!({"StartTicks":0,"EndTicks":50}),
+                json!({"StartTicks":100,"EndTicks":250}),
+                json!({"StartTicks":300,"EndTicks":800}),
+            ]
+        );
+        assert!(jellyfin_intro_segments(&json!({"Items":[]})).is_empty());
     }
 
     #[test]
