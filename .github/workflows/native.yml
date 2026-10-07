@@ -52,6 +52,9 @@ jobs:
 
   windows:
     runs-on: windows-2022
+    env:
+      WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -79,9 +82,35 @@ jobs:
           Copy-Item $ffmpeg.FullName stage/windows/ffmpeg.exe
           Copy-Item $ffprobe.FullName stage/windows/ffprobe.exe
           Copy-Item $nssm.FullName stage/windows/nssm.exe
+      - name: Sign Jellymax server
+        if: env.WINDOWS_CERTIFICATE_BASE64 != ''
+        shell: pwsh
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP "jellymax-signing.pfx"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
+            Where-Object FullName -Match '\\x64\\signtool\.exe$' |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe was not found" }
+          & $signtool.FullName sign /f $certificatePath /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 stage/windows/jellymax.exe
+          if ($LASTEXITCODE -ne 0) { throw "Signing jellymax.exe failed" }
       - name: Build EXE installer
         shell: pwsh
         run: iscc packaging/windows/Jellymax.iss
+      - name: Sign Windows installer
+        if: env.WINDOWS_CERTIFICATE_BASE64 != ''
+        shell: pwsh
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP "jellymax-signing.pfx"
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
+            Where-Object FullName -Match '\\x64\\signtool\.exe$' |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe was not found" }
+          & $signtool.FullName sign /f $certificatePath /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 dist/Jellymax-Windows-x64.exe
+          if ($LASTEXITCODE -ne 0) { throw "Signing the Windows installer failed" }
+          & $signtool.FullName verify /pa /v dist/Jellymax-Windows-x64.exe
       - name: Install and smoke-test Windows service
         shell: pwsh
         run: |

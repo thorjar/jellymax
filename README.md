@@ -130,4 +130,4 @@ The **Build native installers** GitHub Actions workflow produces:
 - a macOS Apple Silicon `.dmg` whose launcher installs a per-user `launchd` service;
 - a Windows x64 `.exe` installer which uses NSSM to install an automatic Windows service.
 
-These unsigned development installers may trigger Gatekeeper or SmartScreen warnings. Public releases should add Apple signing/notarization and Windows Authenticode signing secrets. Docker remains a separate supported deployment and continues using the explicit `/data` and `/srv` paths in its existing images.
+Unsigned development installers may trigger Gatekeeper, Chrome, or SmartScreen warnings. To Authenticode-sign Windows builds, add `WINDOWS_CERTIFICATE_BASE64` (a base64-encoded PFX code-signing certificate) and `WINDOWS_CERTIFICATE_PASSWORD` as GitHub Actions secrets. The workflow signs both `jellymax.exe` and the finished installer and timestamps both signatures. Releases built without those secrets remain unsigned. Docker remains a separate supported deployment and continues using the explicit `/data` and `/srv` paths in its existing images.

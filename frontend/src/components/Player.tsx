@@ -642,7 +642,7 @@ export function Player({ item }: PlayerProps) {
           <div className={fullscreen ? "contents" : "relative aspect-video w-full"}>
           <video {...commonProps} ref={mediaRef as RefObject<HTMLVideoElement>}
             className="h-full w-full bg-black object-contain cursor-pointer" playsInline
-            onClick={togglePlayback}>
+            onClick={nativeFullscreenControls ? undefined : togglePlayback}>
             {subtitleUrl && <track ref={subtitleTrackRef} key={selectedSubtitle} kind="subtitles" src={subtitleUrl}
               srcLang={typeof selectedSubtitle === "string"
                 ? savedSubtitles.find((saved) => saved.id === selectedSubtitle)?.language ?? "und"
