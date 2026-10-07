@@ -76,6 +76,30 @@ test("Windows fullscreen retains Jellymax controls and single-click playback", a
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.controls)).toBe(false);
 });
 
+test("Skip Intro keeps a stable fullscreen hit target", async ({ page }) => {
+  await page.getByRole("navigation", { name: "Mock Jellyfin libraries" }).getByRole("link", { name: "Remote Movies" }).click();
+  await page.getByRole("link", { name: /Remote Marker Episode/ }).click();
+  await page.getByRole("link", { name: "▶ Play", exact: true }).click();
+  const video = page.locator("video");
+  await video.evaluate((element: HTMLVideoElement) => {
+    Object.defineProperty(element, "duration", { configurable: true, value: 100 });
+    element.currentTime = 2;
+    element.dispatchEvent(new Event("timeupdate"));
+  });
+  await page.getByRole("button", { name: "Fullscreen", exact: true }).click();
+  const skip = page.getByRole("button", { name: "Skip Intro", exact: true });
+  await expect(skip).toBeVisible();
+  await page.waitForTimeout(3_800);
+  const beforeHover = await skip.boundingBox();
+  await skip.hover();
+  const afterHover = await skip.boundingBox();
+  expect(beforeHover).not.toBeNull();
+  expect(afterHover).not.toBeNull();
+  expect(afterHover!.y).toBe(beforeHover!.y);
+  await skip.click();
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeGreaterThanOrEqual(5);
+});
+
 test("connected Jellyfin intro markers take priority", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const token = localStorage.getItem("jellymax_token") ?? "";

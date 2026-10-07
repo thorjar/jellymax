@@ -637,7 +637,7 @@ export function Player({ item }: PlayerProps) {
             <span className="rounded-md bg-black/80 px-3 py-2 text-sm text-amber-200">{subtitleError}</span>
           </div>}
           {activeIntro && <button type="button" onClick={() => seek(activeIntro.EndTicks / TICKS_PER_SECOND)}
-            className={`absolute right-6 z-20 rounded-md border border-white/70 bg-black/80 px-4 py-2 text-sm font-semibold text-white shadow-lg transition-all hover:bg-white hover:text-black focus-visible:outline-2 focus-visible:outline-brand sm:right-8 ${fullscreen ? (playerControlsShown ? "bottom-28 sm:bottom-24" : "bottom-8 sm:bottom-10") : "bottom-5 sm:bottom-7"}`}>
+            className={`absolute right-6 z-40 rounded-md border border-white/70 bg-black/80 px-4 py-2 text-sm font-semibold text-white shadow-lg transition-all hover:bg-white hover:text-black focus-visible:outline-2 focus-visible:outline-brand sm:right-8 ${fullscreen ? "bottom-28 sm:bottom-24" : "bottom-5 sm:bottom-7"}`}>
             Skip Intro
           </button>}
           {captionText && <div className={`pointer-events-none absolute inset-x-5 z-10 flex justify-center text-center transition-[bottom] duration-200 ${fullscreen ? (playerControlsShown ? "bottom-24 sm:bottom-20" : "bottom-5 sm:bottom-7") : "bottom-5 sm:bottom-7"}`} aria-live="off">
