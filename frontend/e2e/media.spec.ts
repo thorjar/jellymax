@@ -51,7 +51,7 @@ test("fullscreen controls return when Chromium reports pointer movement", async 
   await expect(controls).toHaveClass(/opacity-100/);
 });
 
-test("Windows fullscreen delegates to the browser's native video controls", async ({ page }) => {
+test("Windows fullscreen retains Jellymax controls and single-click playback", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "userAgent", {
       configurable: true,
@@ -66,11 +66,12 @@ test("Windows fullscreen delegates to the browser's native video controls", asyn
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.readyState)).toBeGreaterThanOrEqual(2);
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.controls)).toBe(false);
   await page.getByRole("button", { name: "Fullscreen", exact: true }).click();
-  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.tagName)).toBe("VIDEO");
-  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.controls)).toBe(true);
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.tagName)).toBe("DIV");
+  await expect(page.getByRole("button", { name: "Subtitles", exact: true })).toBeVisible();
+  await expect(video).toHaveCSS("filter", "opacity(0.9999)");
   const pausedBeforeClick = await video.evaluate((element: HTMLVideoElement) => element.paused);
   await video.dispatchEvent("click");
-  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.paused)).toBe(pausedBeforeClick);
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.paused)).toBe(!pausedBeforeClick);
   await page.evaluate(() => document.exitFullscreen());
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.controls)).toBe(false);
 });

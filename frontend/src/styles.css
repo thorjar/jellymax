@@ -105,6 +105,15 @@
   backface-visibility: hidden;
 }
 
+/*
+ * Edge can promote an unmodified video to a Windows DirectComposition plane
+ * above the page. A practically invisible filter keeps the video in the same
+ * composed surface as Jellymax's controls, captions, and Skip Intro action.
+ */
+.jellymax-windows-player:fullscreen video {
+  filter: opacity(0.9999);
+}
+
 .jellymax-player-frame:fullscreen .jellymax-player-overlay {
   transform: translateZ(1px);
   backface-visibility: hidden;

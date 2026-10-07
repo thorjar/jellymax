@@ -23,7 +23,6 @@ export function Player({ item }: PlayerProps) {
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
-  const [nativeFullscreenControls, setNativeFullscreenControls] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [subtitleMenuOpen, setSubtitleMenuOpen] = useState(false);
   const [audioMenuOpen, setAudioMenuOpen] = useState(false);
@@ -59,7 +58,7 @@ export function Player({ item }: PlayerProps) {
   const stoppedRef = useRef(true);
   const playSessionRef = useRef<string | undefined>(undefined);
   const isAudio = item.MediaType === "Audio";
-  const useWindowsNativeFullscreen = /Windows/i.test(navigator.userAgent);
+  const isWindowsBrowser = /Windows/i.test(navigator.userAgent);
 
   useEffect(() => () => window.clearTimeout(controlsTimer.current), []);
 
@@ -152,18 +151,12 @@ export function Player({ item }: PlayerProps) {
 
   useEffect(() => {
     const onFullscreenChange = () => {
-      const video = mediaRef.current;
-      const nativeVideoFullscreen = useWindowsNativeFullscreen
-        && video instanceof HTMLVideoElement
-        && document.fullscreenElement === video;
-      setFullscreen(document.fullscreenElement === frameRef.current || nativeVideoFullscreen);
-      setNativeFullscreenControls(nativeVideoFullscreen);
-      if (video instanceof HTMLVideoElement) video.controls = nativeVideoFullscreen;
+      setFullscreen(document.fullscreenElement === frameRef.current);
       setControlsVisible(true);
     };
     document.addEventListener("fullscreenchange", onFullscreenChange);
     return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
-  }, [useWindowsNativeFullscreen]);
+  }, []);
 
   useEffect(() => {
     if (!fullscreen || !playing || subtitleMenuOpen || audioMenuOpen) return;
@@ -216,21 +209,13 @@ export function Player({ item }: PlayerProps) {
     const video = mediaRef.current;
     if (!(video instanceof HTMLVideoElement)) return;
     // WebKit can add native controls through its media context menu. Keep the
-    // custom player in control except when Windows fullscreen intentionally
-    // delegates to the browser's compositor and native media controls.
-    const syncNativeControls = () => {
-      const expected = useWindowsNativeFullscreen && document.fullscreenElement === video;
-      if (video.controls !== expected) video.controls = expected;
-    };
-    syncNativeControls();
-    const observer = new MutationObserver(syncNativeControls);
+    // custom video player in control if the attribute is changed later.
+    const hideNativeControls = () => { if (video.controls) video.controls = false; };
+    hideNativeControls();
+    const observer = new MutationObserver(hideNativeControls);
     observer.observe(video, { attributes: true, attributeFilter: ["controls"] });
-    document.addEventListener("fullscreenchange", syncNativeControls);
-    return () => {
-      observer.disconnect();
-      document.removeEventListener("fullscreenchange", syncNativeControls);
-    };
-  }, [source, playbackUrl, useWindowsNativeFullscreen]);
+    return () => observer.disconnect();
+  }, [source, playbackUrl]);
 
   useEffect(() => {
     if (selectedSubtitle === null || !source) {
@@ -451,16 +436,7 @@ export function Player({ item }: PlayerProps) {
 
   async function toggleFullscreen() {
     if (document.fullscreenElement) await document.exitFullscreen();
-    else if (useWindowsNativeFullscreen && mediaRef.current instanceof HTMLVideoElement) {
-      const video = mediaRef.current;
-      video.controls = true;
-      try {
-        await video.requestFullscreen();
-      } catch {
-        video.controls = false;
-        if (frameRef.current?.requestFullscreen) await frameRef.current.requestFullscreen();
-      }
-    } else if (frameRef.current?.requestFullscreen) await frameRef.current.requestFullscreen();
+    else if (frameRef.current?.requestFullscreen) await frameRef.current.requestFullscreen();
     else if (mediaRef.current instanceof HTMLVideoElement) {
       const video = mediaRef.current as HTMLVideoElement & { webkitEnterFullscreen?: () => void };
       video.webkitEnterFullscreen?.();
@@ -556,7 +532,7 @@ export function Player({ item }: PlayerProps) {
       setSubtitleWindowStart(Math.floor(media.currentTime / 45) * 45);
   };
   const commonProps = {
-    src: nativeSrc, controls: isAudio || nativeFullscreenControls, autoPlay: true, preload: "auto" as const,
+    src: nativeSrc, controls: isAudio, autoPlay: true, preload: "auto" as const,
     onPlay: () => {
       const media = mediaRef.current;
       const pausedAt = pausedPositionRef.current;
@@ -633,7 +609,7 @@ export function Player({ item }: PlayerProps) {
   return <div className={`mx-auto ${isAudio ? "max-w-2xl" : "max-w-4xl"}`}>
     {isAudio ? <audio {...commonProps} ref={mediaRef as RefObject<HTMLAudioElement>}
       className="w-full rounded-xl border border-edge bg-surface-raised p-3" />
-      : <div ref={frameRef} className={`jellymax-player-frame group relative overflow-hidden bg-black ${fullscreen ? "h-screen w-screen rounded-none border-0 shadow-none" : "rounded-xl border border-edge shadow-lg"} ${fullscreen && !playerControlsShown ? "cursor-none" : ""}`}
+      : <div ref={frameRef} className={`jellymax-player-frame ${isWindowsBrowser ? "jellymax-windows-player" : ""} group relative overflow-hidden bg-black ${fullscreen ? "h-screen w-screen rounded-none border-0 shadow-none" : "rounded-xl border border-edge shadow-lg"} ${fullscreen && !playerControlsShown ? "cursor-none" : ""}`}
           onPointerMove={revealControls} onMouseMove={revealControls}
           onMouseLeave={() => {
             if (!fullscreen && playing && !subtitleMenuOpen && !audioMenuOpen) setControlsVisible(false);
@@ -642,7 +618,7 @@ export function Player({ item }: PlayerProps) {
           <div className={fullscreen ? "contents" : "relative aspect-video w-full"}>
           <video {...commonProps} ref={mediaRef as RefObject<HTMLVideoElement>}
             className="h-full w-full bg-black object-contain cursor-pointer" playsInline
-            onClick={nativeFullscreenControls ? undefined : togglePlayback}>
+            onClick={togglePlayback}>
             {subtitleUrl && <track ref={subtitleTrackRef} key={selectedSubtitle} kind="subtitles" src={subtitleUrl}
               srcLang={typeof selectedSubtitle === "string"
                 ? savedSubtitles.find((saved) => saved.id === selectedSubtitle)?.language ?? "und"
