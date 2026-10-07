@@ -110,23 +110,3 @@
   backface-visibility: hidden;
   will-change: opacity, transform;
 }
-
-/*
- * Edge can leave an opacity-only fullscreen layer visually stale over a black
- * DirectComposition video surface even though the DOM remains clickable.
- * Moving the layer between compositor positions forces it to repaint whenever
- * controls are revealed or hidden.
- */
-.jellymax-player-frame:fullscreen .jellymax-controls-overlay {
-  opacity: 0;
-  visibility: hidden;
-  transform: translate3d(0, 100%, 1px);
-  transition: opacity 200ms ease, transform 200ms ease, visibility 0s linear 200ms;
-}
-
-.jellymax-player-frame:fullscreen .jellymax-controls-overlay[data-controls-visible="true"] {
-  opacity: 1;
-  visibility: visible;
-  transform: translate3d(0, 0, 1px);
-  transition-delay: 0s;
-}
