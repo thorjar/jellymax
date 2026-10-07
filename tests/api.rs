@@ -778,6 +778,20 @@ async fn scan_search_pagination_and_rescan_keep_ids() {
     );
 }
 #[tokio::test]
+async fn local_scan_ignores_object_storage_library_roots() {
+    let s = TestServer::new().await;
+    s.state.db.call(|connection| {
+        connection.execute("INSERT INTO object_stores(id,name,endpoint,region,bucket,prefix,access_key_id,secret_access_key) VALUES ('store','Bucket','https://example.invalid','auto','bucket','Series','key','secret')", [])?;
+        connection.execute("INSERT INTO libraries(id,name,path,kind,object_store_id) VALUES ('bucket-library','Series','s3://store/Series','tvshows','store')", [])?;
+        Ok(())
+    }).await.unwrap();
+
+    let status = s.scan().await;
+    assert_eq!(status["State"], "Completed", "{status}");
+    assert_eq!(status["Errors"], json!([]));
+}
+
+#[tokio::test]
 async fn missing_root_does_not_prune_but_deleted_files_do() {
     let s = TestServer::new().await;
     s.item().await;

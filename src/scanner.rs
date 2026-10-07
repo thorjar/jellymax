@@ -120,7 +120,7 @@ async fn scan(state: &AppState) -> Result<()> {
         .db
         .call(|c| {
             let mut s =
-                c.prepare("SELECT id,path,kind,root_identity FROM libraries WHERE remote_server_id IS NULL ORDER BY id")?;
+                c.prepare("SELECT id,path,kind,root_identity FROM libraries WHERE remote_server_id IS NULL AND object_store_id IS NULL ORDER BY id")?;
             Ok(s.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
