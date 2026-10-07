@@ -163,9 +163,7 @@ struct Segment {
 #[derive(Clone)]
 struct SegmentLookup {
     item_id: String,
-    series_id: String,
     tmdb_id: Option<String>,
-    imdb_id: Option<String>,
     season: i64,
     episode: i64,
     duration_ticks: Option<i64>,
@@ -186,52 +184,6 @@ fn the_intro_db_segments(body: &Value) -> Vec<Segment> {
             (end > start).then_some(Segment {
                 start_ticks: start.saturating_mul(10_000),
                 end_ticks: end.saturating_mul(10_000),
-            })
-        })
-        .collect()
-}
-
-fn seconds(value: &Value) -> Option<f64> {
-    if let Some(value) = value.as_f64() {
-        return Some(value);
-    }
-    let value = value.as_str()?.trim();
-    if let Ok(seconds) = value.parse::<f64>() {
-        return Some(seconds);
-    }
-    let mut total = 0.0;
-    for part in value.split(':') {
-        total = total * 60.0 + part.parse::<f64>().ok()?;
-    }
-    Some(total)
-}
-
-fn intro_db_app_segments(body: &Value) -> Vec<Segment> {
-    let Some(intro) = body.get("intro").filter(|value| !value.is_null()) else {
-        return vec![];
-    };
-    let entries: Vec<&Value> = intro
-        .as_array()
-        .map(|values| values.iter().collect())
-        .unwrap_or_else(|| vec![intro]);
-    entries
-        .into_iter()
-        .filter_map(|entry| {
-            let start = entry
-                .get("start_ms")
-                .and_then(Value::as_i64)
-                .map(|value| value as f64 / 1000.0)
-                .or_else(|| entry.get("start_sec").and_then(seconds))
-                .unwrap_or(0.0)
-                .max(0.0);
-            let end = entry
-                .get("end_ms")
-                .and_then(Value::as_i64)
-                .map(|value| value as f64 / 1000.0)
-                .or_else(|| entry.get("end_sec").and_then(seconds))?;
-            (end > start).then_some(Segment {
-                start_ticks: (start * 10_000_000.0).round() as i64,
-                end_ticks: (end * 10_000_000.0).round() as i64,
             })
         })
         .collect()
@@ -267,93 +219,6 @@ pub(crate) async fn store_segment_cache(
             Ok(())
         })
         .await
-}
-
-fn valid_imdb(value: &str) -> bool {
-    value.len() > 2
-        && value.starts_with("tt")
-        && value[2..].bytes().all(|byte| byte.is_ascii_digit())
-}
-
-async fn resolve_imdb_id(state: &AppState, lookup: &SegmentLookup) -> Option<String> {
-    if let Some(imdb) = lookup.imdb_id.as_deref().filter(|value| valid_imdb(value)) {
-        return Some(imdb.to_owned());
-    }
-    let tmdb = lookup.tmdb_id.as_deref()?;
-    let key = state.provider_key("tmdb")?;
-    let response = state
-        .http
-        .get(format!("{}/tv/{tmdb}/external_ids", state.tmdb.api_base))
-        .timeout(std::time::Duration::from_secs(4))
-        .query(&[("api_key", key)])
-        .send()
-        .await
-        .ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let imdb = response
-        .json::<Value>()
-        .await
-        .ok()?
-        .get("imdb_id")?
-        .as_str()?
-        .to_owned();
-    if !valid_imdb(&imdb) {
-        return None;
-    }
-    let series = lookup.series_id.clone();
-    let stored = imdb.clone();
-    let _ = state
-        .db
-        .call(move |db| {
-            db.execute(
-                "UPDATE items SET imdb_id=?2 WHERE id=?1",
-                params![series, stored],
-            )?;
-            Ok(())
-        })
-        .await;
-    Some(imdb)
-}
-
-async fn intro_db_app(
-    state: &AppState,
-    lookup: &SegmentLookup,
-    imdb: &str,
-) -> Option<Vec<Segment>> {
-    let base = if cfg!(debug_assertions) {
-        std::env::var("JELLYMAX_INTRODB_APP_TEST_BASE")
-            .unwrap_or_else(|_| "https://api.introdb.app".into())
-    } else {
-        "https://api.introdb.app".into()
-    };
-    let response = state
-        .http
-        .get(format!("{base}/segments"))
-        .timeout(std::time::Duration::from_secs(4))
-        .query(&[
-            ("imdb_id", imdb.to_owned()),
-            ("season", lookup.season.to_string()),
-            ("episode", lookup.episode.to_string()),
-        ])
-        .send()
-        .await
-        .ok()?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Some(vec![]);
-    }
-    if !response.status().is_success() {
-        tracing::warn!(status=%response.status(), item=%lookup.item_id, "IntroDB.app marker lookup failed");
-        return None;
-    }
-    match response.json::<Value>().await {
-        Ok(body) => Some(intro_db_app_segments(&body)),
-        Err(error) => {
-            tracing::warn!(%error, item=%lookup.item_id, "IntroDB.app returned an invalid response");
-            None
-        }
-    }
 }
 
 async fn the_intro_db(state: &AppState, lookup: &SegmentLookup) -> Option<Vec<Segment>> {
@@ -404,36 +269,28 @@ async fn the_intro_db(state: &AppState, lookup: &SegmentLookup) -> Option<Vec<Se
 }
 
 async fn refresh_segment_cache(state: &AppState, lookup: SegmentLookup) -> Result<()> {
-    if let Some(imdb) = resolve_imdb_id(state, &lookup).await
-        && let Some(intro) = intro_db_app(state, &lookup, &imdb).await
-        && !intro.is_empty()
-    {
-        return store_segment_cache(
-            state,
-            lookup.item_id,
-            &json!({"Intro": intro, "Source": "IntroDB.app"}),
-            crate::auth::now(),
-        )
-        .await;
+    match the_intro_db(state, &lookup).await {
+        Some(intro) if !intro.is_empty() => {
+            store_segment_cache(
+                state,
+                lookup.item_id,
+                &json!({"Intro": intro, "Source": "TheIntroDB"}),
+                crate::auth::now(),
+            )
+            .await
+        }
+        Some(_) => {
+            store_segment_cache(
+                state,
+                lookup.item_id,
+                &json!({"Intro": [], "Source": "None"}),
+                crate::auth::now(),
+            )
+            .await
+        }
+        // A provider outage must not erase a previously working marker.
+        None => Ok(()),
     }
-    if let Some(intro) = the_intro_db(state, &lookup).await
-        && !intro.is_empty()
-    {
-        return store_segment_cache(
-            state,
-            lookup.item_id,
-            &json!({"Intro": intro, "Source": "TheIntroDB"}),
-            crate::auth::now(),
-        )
-        .await;
-    }
-    store_segment_cache(
-        state,
-        lookup.item_id,
-        &json!({"Intro": [], "Source": "None"}),
-        crate::auth::now(),
-    )
-    .await
 }
 
 async fn segment_lookup(state: &AppState, item_id: String) -> Result<Option<SegmentLookup>> {
@@ -442,21 +299,20 @@ async fn segment_lookup(state: &AppState, item_id: String) -> Result<Option<Segm
         .call(move |db| {
             Ok(db
                 .query_row(
-                    "SELECT i.id,series.id,series.tmdb_id,series.imdb_id,i.parent_index_number,i.index_number,i.runtime_ticks
+                    "SELECT i.id,series.tmdb_id,i.parent_index_number,i.index_number,i.runtime_ticks
                      FROM items i
                      JOIN items season ON season.id=i.parent_id
                      JOIN items series ON series.id=season.parent_id
-                     WHERE i.id=?1 AND i.kind='Episode'",
+                     WHERE i.id=?1 AND i.kind='Episode'
+                       AND i.parent_index_number IS NOT NULL AND i.index_number IS NOT NULL",
                     [item_id],
                     |row| {
                         Ok(SegmentLookup {
                             item_id: row.get(0)?,
-                            series_id: row.get(1)?,
-                            tmdb_id: row.get(2)?,
-                            imdb_id: row.get(3)?,
-                            season: row.get(4)?,
-                            episode: row.get(5)?,
-                            duration_ticks: row.get(6)?,
+                            tmdb_id: row.get(1)?,
+                            season: row.get(2)?,
+                            episode: row.get(3)?,
+                            duration_ticks: row.get(4)?,
                         })
                     },
                 )
@@ -471,7 +327,7 @@ pub(crate) async fn schedule_all_segment_caches(state: &AppState) -> Result<()> 
         .db
         .call(move |db| {
             let mut query = db.prepare(
-                "SELECT i.id,series.id,series.tmdb_id,series.imdb_id,i.parent_index_number,i.index_number,i.runtime_ticks,m.payload,m.fetched_at
+                "SELECT i.id,series.tmdb_id,i.parent_index_number,i.index_number,i.runtime_ticks,m.payload,m.fetched_at
                  FROM items i
                  JOIN items season ON season.id=i.parent_id
                  JOIN items series ON series.id=season.parent_id
@@ -481,18 +337,16 @@ pub(crate) async fn schedule_all_segment_caches(state: &AppState) -> Result<()> 
             let rows = query
                 .query_map([], |row| {
                     let payload = row
-                        .get::<_, Option<String>>(7)?
+                        .get::<_, Option<String>>(5)?
                         .and_then(|value| serde_json::from_str::<Value>(&value).ok());
-                    let fetched_at = row.get::<_, Option<i64>>(8)?;
+                    let fetched_at = row.get::<_, Option<i64>>(6)?;
                     Ok((
                         SegmentLookup {
                             item_id: row.get(0)?,
-                            series_id: row.get(1)?,
-                            tmdb_id: row.get(2)?,
-                            imdb_id: row.get(3)?,
-                            season: row.get(4)?,
-                            episode: row.get(5)?,
-                            duration_ticks: row.get(6)?,
+                            tmdb_id: row.get(1)?,
+                            season: row.get(2)?,
+                            episode: row.get(3)?,
+                            duration_ticks: row.get(4)?,
                         },
                         payload,
                         fetched_at,
@@ -510,10 +364,11 @@ pub(crate) async fn schedule_all_segment_caches(state: &AppState) -> Result<()> 
                 .into_iter()
                 .filter_map(|(lookup, payload, fetched)| {
                     let fresh = payload.as_ref().is_some_and(|value| {
-                        value.get("Source").and_then(Value::as_str) != Some("Jellyfin")
-                            && fetched.is_some_and(|time| {
-                                time >= now.saturating_sub(cache_lifetime(value))
-                            })
+                        matches!(
+                            value.get("Source").and_then(Value::as_str),
+                            Some("TheIntroDB") | Some("None")
+                        ) && fetched
+                            .is_some_and(|time| time >= now.saturating_sub(cache_lifetime(value)))
                     });
                     (!fresh).then_some(lookup)
                 }),
@@ -553,6 +408,12 @@ pub async fn segments(
             serde_json::from_str::<Value>(&payload)
                 .ok()
                 .map(|value| (value, fetched_at))
+        })
+        .filter(|(value, _)| {
+            matches!(
+                value.get("Source").and_then(Value::as_str),
+                Some("TheIntroDB") | Some("None")
+            )
         });
     let stale = cached
         .as_ref()
@@ -586,14 +447,14 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_both_intro_databases() {
-        let the_intro_db = json!({"intro":[
+    fn normalizes_the_intro_db_ranges_and_ignores_invalid_ones() {
+        let body = json!({"intro":[
             {"start_ms":null,"end_ms":23_000},
             {"start_ms":30_000,"end_ms":90_000},
             {"start_ms":50_000,"end_ms":40_000}
         ]});
         assert_eq!(
-            the_intro_db_segments(&the_intro_db),
+            the_intro_db_segments(&body),
             vec![
                 Segment {
                     start_ticks: 0,
@@ -605,23 +466,6 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(
-            intro_db_app_segments(&json!({"intro":{
-                "start_sec":"00:00:02.5","end_sec":58
-            }})),
-            vec![Segment {
-                start_ticks: 25_000_000,
-                end_ticks: 580_000_000
-            }]
-        );
-        assert!(intro_db_app_segments(&json!({"intro":null})).is_empty());
-    }
-
-    #[test]
-    fn validates_imdb_ids() {
-        assert!(valid_imdb("tt0903747"));
-        assert!(!valid_imdb("0903747"));
-        assert!(!valid_imdb("tt09x3747"));
     }
 
     #[test]

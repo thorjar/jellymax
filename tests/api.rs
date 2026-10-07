@@ -179,7 +179,7 @@ async fn remote_playback_uses_local_hls_and_static_upstream_input() {
 }
 
 #[tokio::test]
-async fn remote_sync_preserves_imdb_id_and_playback_only_reads_cached_segments() {
+async fn remote_sync_skips_jellyfin_markers_and_playback_only_reads_cached_segments() {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -193,7 +193,7 @@ async fn remote_sync_preserves_imdb_id_and_playback_only_reads_cached_segments()
         }))
         .route("/Items", axum::routing::get(|| async {
             axum::Json(json!({"Items":[
-                {"Id":"series","Name":"Series","Type":"Series","ProviderIds":{"Tmdb":"123","Imdb":"tt0903747"}},
+                {"Id":"series","Name":"Series","Type":"Series","ProviderIds":{"Tmdb":"123"}},
                 {"Id":"season","Name":"Season 1","Type":"Season","ParentId":"series","IndexNumber":1},
                 {"Id":"episode","Name":"Episode 1","Type":"Episode","ParentId":"season","ParentIndexNumber":1,"IndexNumber":1,"RunTimeTicks":600000000}
             ]}))
@@ -218,10 +218,18 @@ async fn remote_sync_preserves_imdb_id_and_playback_only_reads_cached_segments()
         s.call("POST", "/RemoteServers/remote/Sync", None).await.0,
         StatusCode::OK
     );
-    let (episode, imdb) = s.state.db.call(|c| Ok(c.query_row(
-        "SELECT episode.id,series.imdb_id FROM items episode JOIN items season ON season.id=episode.parent_id JOIN items series ON series.id=season.parent_id WHERE episode.remote_item_id='episode'",
-        [], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?)))?)).await.unwrap();
-    assert_eq!(imdb, "tt0903747");
+    let episode = s
+        .state
+        .db
+        .call(|c| {
+            Ok(c.query_row(
+                "SELECT id FROM items WHERE remote_item_id='episode'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?)
+        })
+        .await
+        .unwrap();
     assert_eq!(
         marker_requests.load(Ordering::SeqCst),
         0,
@@ -232,7 +240,7 @@ async fn remote_sync_preserves_imdb_id_and_playback_only_reads_cached_segments()
     s.state.db.call(move |c| {
         c.execute(
             "INSERT INTO media_segments(item_id,payload,fetched_at) VALUES (?1,?2,?3)",
-            rusqlite::params![cache_episode, json!({"Intro":[{"StartTicks":10000000,"EndTicks":90000000}],"Source":"IntroDB.app"}).to_string(), jellymax::auth::now()],
+            rusqlite::params![cache_episode, json!({"Intro":[{"StartTicks":10000000,"EndTicks":90000000}],"Source":"TheIntroDB"}).to_string(), jellymax::auth::now()],
         )?;
         Ok(())
     }).await.unwrap();
@@ -240,7 +248,7 @@ async fn remote_sync_preserves_imdb_id_and_playback_only_reads_cached_segments()
         .call("GET", &format!("/Items/{episode}/Segments"), None)
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(markers["Source"], "IntroDB.app");
+    assert_eq!(markers["Source"], "TheIntroDB");
     assert_eq!(
         markers["Intro"][0],
         json!({"StartTicks":10000000,"EndTicks":90000000})
