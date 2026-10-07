@@ -643,8 +643,8 @@ export function Player({ item }: PlayerProps) {
             <span className="max-w-[90%] whitespace-pre-line rounded bg-black/75 px-3 py-1.5 text-base font-semibold leading-snug text-white shadow-lg sm:text-lg">{captionText}</span>
           </div>}
           </div>
-          <div className={fullscreen
-            ? `jellymax-player-overlay absolute inset-x-0 bottom-0 z-30 bg-linear-to-t from-black/95 via-black/75 to-transparent px-3 pb-3 pt-10 text-white transition-opacity duration-200 sm:px-5 ${playerControlsShown ? "opacity-100" : "pointer-events-none opacity-0"}`
+          <div data-controls-visible={fullscreen ? playerControlsShown : undefined} className={fullscreen
+            ? `jellymax-player-overlay jellymax-controls-overlay absolute inset-x-0 bottom-0 z-30 bg-linear-to-t from-black/95 via-black/75 to-transparent px-3 pb-3 pt-10 text-white sm:px-5 ${playerControlsShown ? "" : "pointer-events-none"}`
             : "relative z-30 border-t border-edge bg-surface-raised px-3 py-3 text-white sm:px-5"}>
             <input type="range" min={0} max={duration || 0} step={0.1} value={Math.min(currentTime, duration || 0)}
               onChange={(event) => seek(Number(event.target.value))} aria-label="Seek playback"

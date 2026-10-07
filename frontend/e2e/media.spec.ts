@@ -38,7 +38,7 @@ test("fullscreen controls return when Chromium reports pointer movement", async 
   await expect(controls).not.toHaveClass(/absolute/);
   await page.getByRole("button", { name: "Fullscreen", exact: true }).click();
   await expect.poll(() => page.evaluate(() => document.fullscreenElement?.tagName)).toBe("DIV");
-  const frame = video.locator("..");
+  const frame = page.locator(".jellymax-player-frame");
   await expect(frame).toHaveClass(/h-screen/);
   await expect.poll(async () => Math.round((await frame.boundingBox())?.height ?? 0)).toBe(800);
   await expect(controls).toHaveClass(/absolute/);
@@ -46,9 +46,12 @@ test("fullscreen controls return when Chromium reports pointer movement", async 
   await expect(controls).not.toHaveCSS("transform", "none");
   await expect(video).toHaveCSS("z-index", "0");
   await page.waitForTimeout(3_800);
-  await expect(controls).toHaveClass(/opacity-0/);
+  await expect(controls).toHaveAttribute("data-controls-visible", "false");
+  await expect(controls).toHaveCSS("visibility", "hidden");
   await page.mouse.move(640, 790);
-  await expect(controls).toHaveClass(/opacity-100/);
+  await expect(controls).toHaveAttribute("data-controls-visible", "true");
+  await expect(controls).toHaveCSS("visibility", "visible");
+  await expect(controls).toHaveCSS("opacity", "1");
 });
 
 test("connected Jellyfin intro markers take priority", async ({ page }) => {
