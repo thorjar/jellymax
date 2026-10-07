@@ -11,7 +11,11 @@ use axum::{
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
 
 const INTRODB_API: &str = "https://api.theintrodb.org/v3";
 const SEGMENT_CACHE_SECONDS: i64 = 7 * 24 * 60 * 60;
@@ -221,6 +225,43 @@ pub(crate) async fn store_segment_cache(
         .await
 }
 
+static INTRO_DB_NEXT_REQUEST: OnceLock<tokio::sync::Mutex<Instant>> = OnceLock::new();
+
+async fn wait_for_intro_db_rate_limit() {
+    let gate = INTRO_DB_NEXT_REQUEST.get_or_init(|| tokio::sync::Mutex::new(Instant::now()));
+    let mut next = gate.lock().await;
+    let now = Instant::now();
+    if *next > now {
+        tokio::time::sleep(*next - now).await;
+    }
+    // TheIntroDB permits roughly 30 requests per 10 seconds. Keep the same
+    // safety margin as its official Jellyfin plugin: 25 per 10 seconds.
+    *next = Instant::now() + Duration::from_millis(400);
+}
+
+async fn postpone_intro_db_requests(delay: Duration) {
+    let gate = INTRO_DB_NEXT_REQUEST.get_or_init(|| tokio::sync::Mutex::new(Instant::now()));
+    let mut next = gate.lock().await;
+    let retry = Instant::now() + delay.min(Duration::from_secs(24 * 60 * 60));
+    if retry > *next {
+        *next = retry;
+    }
+}
+
+fn intro_db_retry_after(headers: &reqwest::header::HeaderMap) -> Duration {
+    for name in ["x-usage-limit-reset", "retry-after", "x-ratelimit-reset"] {
+        if let Some(seconds) = headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|seconds| *seconds > 0)
+        {
+            return Duration::from_secs(seconds.min(24 * 60 * 60));
+        }
+    }
+    Duration::from_secs(5 * 60)
+}
+
 async fn the_intro_db(state: &AppState, lookup: &SegmentLookup) -> Option<Vec<Segment>> {
     let tmdb = lookup.tmdb_id.as_deref()?;
     if !tmdb.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -231,6 +272,7 @@ async fn the_intro_db(state: &AppState, lookup: &SegmentLookup) -> Option<Vec<Se
     } else {
         INTRODB_API.into()
     };
+    wait_for_intro_db_rate_limit().await;
     let mut request = state
         .http
         .get(format!("{base}/media"))
@@ -252,6 +294,12 @@ async fn the_intro_db(state: &AppState, lookup: &SegmentLookup) -> Option<Vec<Se
         request = request.bearer_auth(key);
     }
     let response = request.send().await.ok()?;
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let delay = intro_db_retry_after(response.headers());
+        postpone_intro_db_requests(delay).await;
+        tracing::warn!(retry_after_seconds=delay.as_secs(), item=%lookup.item_id, "TheIntroDB rate limit reached; marker refresh paused");
+        return None;
+    }
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Some(vec![]);
     }
@@ -466,6 +514,15 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn honors_the_intro_db_retry_headers() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after", "7".parse().unwrap());
+        assert_eq!(intro_db_retry_after(&headers), Duration::from_secs(7));
+        headers.insert("x-usage-limit-reset", "3600".parse().unwrap());
+        assert_eq!(intro_db_retry_after(&headers), Duration::from_secs(3600));
     }
 
     #[test]
