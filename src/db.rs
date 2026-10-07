@@ -166,6 +166,7 @@ fn migrate_items_metadata(connection: &Connection) -> Result<()> {
         .collect::<std::result::Result<Vec<_>, _>>()?;
     for (column, ddl) in [
         ("tmdb_id", "TEXT"),
+        ("imdb_id", "TEXT"),
         ("year", "INTEGER"),
         ("overview", "TEXT"),
         ("genres", "TEXT NOT NULL DEFAULT '[]'"),

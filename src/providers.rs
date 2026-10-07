@@ -11,10 +11,7 @@ use axum::{
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{
-    collections::HashMap,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::collections::HashMap;
 
 const INTRODB_API: &str = "https://api.theintrodb.org/v3";
 const SEGMENT_CACHE_SECONDS: i64 = 7 * 24 * 60 * 60;
@@ -156,14 +153,25 @@ pub async fn update(
     get(auth, State(state)).await
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct Segment {
     start_ticks: i64,
     end_ticks: i64,
 }
 
-fn intro_segments(body: &Value) -> Vec<Segment> {
+#[derive(Clone)]
+struct SegmentLookup {
+    item_id: String,
+    series_id: String,
+    tmdb_id: Option<String>,
+    imdb_id: Option<String>,
+    season: i64,
+    episode: i64,
+    duration_ticks: Option<i64>,
+}
+
+fn the_intro_db_segments(body: &Value) -> Vec<Segment> {
     body.get("intro")
         .and_then(Value::as_array)
         .into_iter()
@@ -183,6 +191,52 @@ fn intro_segments(body: &Value) -> Vec<Segment> {
         .collect()
 }
 
+fn seconds(value: &Value) -> Option<f64> {
+    if let Some(value) = value.as_f64() {
+        return Some(value);
+    }
+    let value = value.as_str()?.trim();
+    if let Ok(seconds) = value.parse::<f64>() {
+        return Some(seconds);
+    }
+    let mut total = 0.0;
+    for part in value.split(':') {
+        total = total * 60.0 + part.parse::<f64>().ok()?;
+    }
+    Some(total)
+}
+
+fn intro_db_app_segments(body: &Value) -> Vec<Segment> {
+    let Some(intro) = body.get("intro").filter(|value| !value.is_null()) else {
+        return vec![];
+    };
+    let entries: Vec<&Value> = intro
+        .as_array()
+        .map(|values| values.iter().collect())
+        .unwrap_or_else(|| vec![intro]);
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let start = entry
+                .get("start_ms")
+                .and_then(Value::as_i64)
+                .map(|value| value as f64 / 1000.0)
+                .or_else(|| entry.get("start_sec").and_then(seconds))
+                .unwrap_or(0.0)
+                .max(0.0);
+            let end = entry
+                .get("end_ms")
+                .and_then(Value::as_i64)
+                .map(|value| value as f64 / 1000.0)
+                .or_else(|| entry.get("end_sec").and_then(seconds))?;
+            (end > start).then_some(Segment {
+                start_ticks: (start * 10_000_000.0).round() as i64,
+                end_ticks: (end * 10_000_000.0).round() as i64,
+            })
+        })
+        .collect()
+}
+
 fn cache_lifetime(value: &Value) -> i64 {
     if value
         .get("Intro")
@@ -191,8 +245,6 @@ fn cache_lifetime(value: &Value) -> i64 {
     {
         SEGMENT_CACHE_SECONDS
     } else {
-        // New server/plugin analysis and corrected community submissions should
-        // become visible quickly. An empty result is not authoritative.
         5 * 60
     }
 }
@@ -217,29 +269,273 @@ pub(crate) async fn store_segment_cache(
         .await
 }
 
+fn valid_imdb(value: &str) -> bool {
+    value.len() > 2
+        && value.starts_with("tt")
+        && value[2..].bytes().all(|byte| byte.is_ascii_digit())
+}
+
+async fn resolve_imdb_id(state: &AppState, lookup: &SegmentLookup) -> Option<String> {
+    if let Some(imdb) = lookup.imdb_id.as_deref().filter(|value| valid_imdb(value)) {
+        return Some(imdb.to_owned());
+    }
+    let tmdb = lookup.tmdb_id.as_deref()?;
+    let key = state.provider_key("tmdb")?;
+    let response = state
+        .http
+        .get(format!("{}/tv/{tmdb}/external_ids", state.tmdb.api_base))
+        .timeout(std::time::Duration::from_secs(4))
+        .query(&[("api_key", key)])
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let imdb = response
+        .json::<Value>()
+        .await
+        .ok()?
+        .get("imdb_id")?
+        .as_str()?
+        .to_owned();
+    if !valid_imdb(&imdb) {
+        return None;
+    }
+    let series = lookup.series_id.clone();
+    let stored = imdb.clone();
+    let _ = state
+        .db
+        .call(move |db| {
+            db.execute(
+                "UPDATE items SET imdb_id=?2 WHERE id=?1",
+                params![series, stored],
+            )?;
+            Ok(())
+        })
+        .await;
+    Some(imdb)
+}
+
+async fn intro_db_app(
+    state: &AppState,
+    lookup: &SegmentLookup,
+    imdb: &str,
+) -> Option<Vec<Segment>> {
+    let base = if cfg!(debug_assertions) {
+        std::env::var("JELLYMAX_INTRODB_APP_TEST_BASE")
+            .unwrap_or_else(|_| "https://api.introdb.app".into())
+    } else {
+        "https://api.introdb.app".into()
+    };
+    let response = state
+        .http
+        .get(format!("{base}/segments"))
+        .timeout(std::time::Duration::from_secs(4))
+        .query(&[
+            ("imdb_id", imdb.to_owned()),
+            ("season", lookup.season.to_string()),
+            ("episode", lookup.episode.to_string()),
+        ])
+        .send()
+        .await
+        .ok()?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Some(vec![]);
+    }
+    if !response.status().is_success() {
+        tracing::warn!(status=%response.status(), item=%lookup.item_id, "IntroDB.app marker lookup failed");
+        return None;
+    }
+    match response.json::<Value>().await {
+        Ok(body) => Some(intro_db_app_segments(&body)),
+        Err(error) => {
+            tracing::warn!(%error, item=%lookup.item_id, "IntroDB.app returned an invalid response");
+            None
+        }
+    }
+}
+
+async fn the_intro_db(state: &AppState, lookup: &SegmentLookup) -> Option<Vec<Segment>> {
+    let tmdb = lookup.tmdb_id.as_deref()?;
+    if !tmdb.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let base = if cfg!(debug_assertions) {
+        std::env::var("JELLYMAX_INTRODB_TEST_BASE").unwrap_or_else(|_| INTRODB_API.into())
+    } else {
+        INTRODB_API.into()
+    };
+    let mut request = state
+        .http
+        .get(format!("{base}/media"))
+        .timeout(std::time::Duration::from_secs(4))
+        .query(&[
+            ("tmdb_id", tmdb.to_owned()),
+            ("season", lookup.season.to_string()),
+            ("episode", lookup.episode.to_string()),
+            (
+                "duration_ms",
+                lookup
+                    .duration_ticks
+                    .unwrap_or(0)
+                    .saturating_div(10_000)
+                    .to_string(),
+            ),
+        ]);
+    if let Some(key) = state.provider_key("introdb") {
+        request = request.bearer_auth(key);
+    }
+    let response = request.send().await.ok()?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Some(vec![]);
+    }
+    if !response.status().is_success() {
+        tracing::warn!(status=%response.status(), item=%lookup.item_id, "TheIntroDB marker lookup failed");
+        return None;
+    }
+    match response.json::<Value>().await {
+        Ok(body) => Some(the_intro_db_segments(&body)),
+        Err(error) => {
+            tracing::warn!(%error, item=%lookup.item_id, "TheIntroDB returned an invalid response");
+            None
+        }
+    }
+}
+
+async fn refresh_segment_cache(state: &AppState, lookup: SegmentLookup) -> Result<()> {
+    if let Some(imdb) = resolve_imdb_id(state, &lookup).await
+        && let Some(intro) = intro_db_app(state, &lookup, &imdb).await
+        && !intro.is_empty()
+    {
+        return store_segment_cache(
+            state,
+            lookup.item_id,
+            &json!({"Intro": intro, "Source": "IntroDB.app"}),
+            crate::auth::now(),
+        )
+        .await;
+    }
+    if let Some(intro) = the_intro_db(state, &lookup).await
+        && !intro.is_empty()
+    {
+        return store_segment_cache(
+            state,
+            lookup.item_id,
+            &json!({"Intro": intro, "Source": "TheIntroDB"}),
+            crate::auth::now(),
+        )
+        .await;
+    }
+    store_segment_cache(
+        state,
+        lookup.item_id,
+        &json!({"Intro": [], "Source": "None"}),
+        crate::auth::now(),
+    )
+    .await
+}
+
+async fn segment_lookup(state: &AppState, item_id: String) -> Result<Option<SegmentLookup>> {
+    state
+        .db
+        .call(move |db| {
+            Ok(db
+                .query_row(
+                    "SELECT i.id,series.id,series.tmdb_id,series.imdb_id,i.parent_index_number,i.index_number,i.runtime_ticks
+                     FROM items i
+                     JOIN items season ON season.id=i.parent_id
+                     JOIN items series ON series.id=season.parent_id
+                     WHERE i.id=?1 AND i.kind='Episode'",
+                    [item_id],
+                    |row| {
+                        Ok(SegmentLookup {
+                            item_id: row.get(0)?,
+                            series_id: row.get(1)?,
+                            tmdb_id: row.get(2)?,
+                            imdb_id: row.get(3)?,
+                            season: row.get(4)?,
+                            episode: row.get(5)?,
+                            duration_ticks: row.get(6)?,
+                        })
+                    },
+                )
+                .optional()?)
+        })
+        .await
+}
+
+pub(crate) async fn schedule_all_segment_caches(state: &AppState) -> Result<()> {
+    let now = crate::auth::now();
+    let lookups = state
+        .db
+        .call(move |db| {
+            let mut query = db.prepare(
+                "SELECT i.id,series.id,series.tmdb_id,series.imdb_id,i.parent_index_number,i.index_number,i.runtime_ticks,m.payload,m.fetched_at
+                 FROM items i
+                 JOIN items season ON season.id=i.parent_id
+                 JOIN items series ON series.id=season.parent_id
+                 LEFT JOIN media_segments m ON m.item_id=i.id
+                 WHERE i.kind='Episode' AND i.parent_index_number IS NOT NULL AND i.index_number IS NOT NULL",
+            )?;
+            let rows = query
+                .query_map([], |row| {
+                    let payload = row
+                        .get::<_, Option<String>>(7)?
+                        .and_then(|value| serde_json::from_str::<Value>(&value).ok());
+                    let fetched_at = row.get::<_, Option<i64>>(8)?;
+                    Ok((
+                        SegmentLookup {
+                            item_id: row.get(0)?,
+                            series_id: row.get(1)?,
+                            tmdb_id: row.get(2)?,
+                            imdb_id: row.get(3)?,
+                            season: row.get(4)?,
+                            episode: row.get(5)?,
+                            duration_ticks: row.get(6)?,
+                        },
+                        payload,
+                        fetched_at,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await?;
+    let state = state.clone();
+    tokio::spawn(async move {
+        use futures_util::StreamExt;
+        futures_util::stream::iter(
+            lookups
+                .into_iter()
+                .filter_map(|(lookup, payload, fetched)| {
+                    let fresh = payload.as_ref().is_some_and(|value| {
+                        value.get("Source").and_then(Value::as_str) != Some("Jellyfin")
+                            && fetched.is_some_and(|time| {
+                                time >= now.saturating_sub(cache_lifetime(value))
+                            })
+                    });
+                    (!fresh).then_some(lookup)
+                }),
+        )
+        .for_each_concurrent(2, |lookup| {
+            let state = state.clone();
+            async move {
+                if let Err(error) = refresh_segment_cache(&state, lookup.clone()).await {
+                    tracing::warn!(%error, item=%lookup.item_id, "Could not cache intro markers");
+                }
+            }
+        })
+        .await;
+    });
+    Ok(())
+}
+
 pub async fn segments(
     _auth: Auth,
     State(state): State<AppState>,
     Path(item_id): Path<String>,
 ) -> Result<Json<Value>> {
-    let lookup_id = item_id.clone();
-    let metadata: (Option<String>, Option<i64>, Option<i64>, Option<i64>) = state
-        .db
-        .call(move |db| {
-            db.query_row(
-                "SELECT (SELECT tmdb_id FROM items series WHERE series.id=(SELECT parent_id FROM items season WHERE season.id=i.parent_id)),i.parent_index_number,i.index_number,i.runtime_ticks
-                 FROM items i WHERE i.id=?1 AND i.kind='Episode'",
-                [lookup_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()?
-            .ok_or_else(Error::missing)
-        })
-        .await?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
     let cache_id = item_id.clone();
     let cached = state
         .db
@@ -258,73 +554,22 @@ pub async fn segments(
                 .ok()
                 .map(|value| (value, fetched_at))
         });
-
-    // Playback only reads markers prepared ahead of time. Connected Jellyfin
-    // markers are cached by remote synchronization; this endpoint never waits
-    // for the media server that is currently supplying the video stream.
-    if let Some((value, fetched_at)) = cached.as_ref() {
-        let has_markers = value
-            .get("Intro")
-            .and_then(Value::as_array)
-            .is_some_and(|segments| !segments.is_empty());
-        let jellyfin = value.get("Source").and_then(Value::as_str) == Some("Jellyfin");
-        if has_markers && (jellyfin || now - fetched_at < cache_lifetime(value)) {
-            return Ok(Json(value.clone()));
-        }
-    }
-
-    let (Some(tmdb_id), Some(season), Some(episode), duration_ticks) = metadata else {
-        return Ok(Json(json!({"Intro":[],"Source":"None"})));
-    };
-    if !tmdb_id.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Ok(Json(json!({"Intro":[],"Source":"None"})));
-    }
-    let base = if cfg!(debug_assertions) {
-        std::env::var("JELLYMAX_INTRODB_TEST_BASE").unwrap_or_else(|_| INTRODB_API.into())
-    } else {
-        INTRODB_API.into()
-    };
-    let mut request = state
-        .http
-        .get(format!("{base}/media"))
-        .timeout(std::time::Duration::from_secs(4))
-        .query(&[
-            ("tmdb_id", tmdb_id),
-            ("season", season.to_string()),
-            ("episode", episode.to_string()),
-            (
-                "duration_ms",
-                duration_ticks
-                    .unwrap_or(0)
-                    .saturating_div(10_000)
-                    .to_string(),
-            ),
-        ]);
-    if let Some(key) = state.provider_key("introdb") {
-        request = request.bearer_auth(key);
-    }
-    let value = match request.send().await {
-        Ok(response) if response.status() == reqwest::StatusCode::NOT_FOUND => {
-            json!({"Intro":[],"Source":"TheIntroDB"})
-        }
-        Ok(response) if response.status().is_success() => match response.json::<Value>().await {
-            Ok(body) => json!({"Intro":intro_segments(&body),"Source":"TheIntroDB"}),
-            Err(error) => {
-                tracing::warn!(%error, item=%item_id, "TheIntroDB returned an invalid response");
-                json!({"Intro":[],"Source":"None"})
+    let stale = cached
+        .as_ref()
+        .is_none_or(|(value, fetched_at)| crate::auth::now() - fetched_at >= cache_lifetime(value));
+    if stale && let Some(lookup) = segment_lookup(&state, item_id).await? {
+        let state = state.clone();
+        tokio::spawn(async move {
+            if let Err(error) = refresh_segment_cache(&state, lookup.clone()).await {
+                tracing::warn!(%error, item=%lookup.item_id, "Could not refresh intro markers");
             }
-        },
-        Ok(response) => {
-            tracing::warn!(status=%response.status(), item=%item_id, "TheIntroDB marker lookup failed");
-            json!({"Intro":[],"Source":"None"})
-        }
-        Err(error) => {
-            tracing::warn!(%error, item=%item_id, "TheIntroDB marker lookup unavailable");
-            json!({"Intro":[],"Source":"None"})
-        }
-    };
-    store_segment_cache(&state, item_id, &value, now).await?;
-    Ok(Json(value))
+        });
+    }
+    Ok(Json(
+        cached
+            .map(|(value, _)| value)
+            .unwrap_or_else(|| json!({"Intro": [], "Source": "None"})),
+    ))
 }
 
 #[cfg(test)]
@@ -341,15 +586,14 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_introdb_ranges_and_ignores_invalid_ones() {
-        let body = json!({"intro":[
+    fn normalizes_both_intro_databases() {
+        let the_intro_db = json!({"intro":[
             {"start_ms":null,"end_ms":23_000},
             {"start_ms":30_000,"end_ms":90_000},
-            {"start_ms":50_000,"end_ms":40_000},
-            {"start_ms":10_000,"end_ms":null}
+            {"start_ms":50_000,"end_ms":40_000}
         ]});
         assert_eq!(
-            intro_segments(&body),
+            the_intro_db_segments(&the_intro_db),
             vec![
                 Segment {
                     start_ticks: 0,
@@ -361,6 +605,23 @@ mod tests {
                 },
             ]
         );
+        assert_eq!(
+            intro_db_app_segments(&json!({"intro":{
+                "start_sec":"00:00:02.5","end_sec":58
+            }})),
+            vec![Segment {
+                start_ticks: 25_000_000,
+                end_ticks: 580_000_000
+            }]
+        );
+        assert!(intro_db_app_segments(&json!({"intro":null})).is_empty());
+    }
+
+    #[test]
+    fn validates_imdb_ids() {
+        assert!(valid_imdb("tt0903747"));
+        assert!(!valid_imdb("0903747"));
+        assert!(!valid_imdb("tt09x3747"));
     }
 
     #[test]

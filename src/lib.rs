@@ -127,7 +127,7 @@ impl AppState {
             internal_token: uuid::Uuid::new_v4().simple().to_string(),
             object_uploads: object_storage::UploadSessions::default(),
         };
-        remote::schedule_all_media_segment_caches(&state).await?;
+        providers::schedule_all_segment_caches(&state).await?;
         Ok(state)
     }
 }

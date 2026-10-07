@@ -179,7 +179,7 @@ async fn remote_playback_uses_local_hls_and_static_upstream_input() {
 }
 
 #[tokio::test]
-async fn remote_sync_caches_segments_and_playback_only_reads_the_cache() {
+async fn remote_sync_preserves_imdb_id_and_playback_only_reads_cached_segments() {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -193,7 +193,7 @@ async fn remote_sync_caches_segments_and_playback_only_reads_the_cache() {
         }))
         .route("/Items", axum::routing::get(|| async {
             axum::Json(json!({"Items":[
-                {"Id":"series","Name":"Series","Type":"Series","ProviderIds":{"Tmdb":"123"}},
+                {"Id":"series","Name":"Series","Type":"Series","ProviderIds":{"Tmdb":"123","Imdb":"tt0903747"}},
                 {"Id":"season","Name":"Season 1","Type":"Season","ParentId":"series","IndexNumber":1},
                 {"Id":"episode","Name":"Episode 1","Type":"Episode","ParentId":"season","ParentIndexNumber":1,"IndexNumber":1,"RunTimeTicks":600000000}
             ]}))
@@ -218,59 +218,37 @@ async fn remote_sync_caches_segments_and_playback_only_reads_the_cache() {
         s.call("POST", "/RemoteServers/remote/Sync", None).await.0,
         StatusCode::OK
     );
-    let episode = s
-        .state
-        .db
-        .call(|c| {
-            Ok(c.query_row(
-                "SELECT id FROM items WHERE remote_server_id='remote' AND remote_item_id='episode'",
-                [],
-                |row| row.get::<_, String>(0),
-            )?)
-        })
-        .await
-        .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            let cached = s
-                .state
-                .db
-                .call({
-                    let episode = episode.clone();
-                    move |c| {
-                        Ok(c.query_row(
-                            "SELECT EXISTS(SELECT 1 FROM media_segments WHERE item_id=?1)",
-                            [episode],
-                            |row| row.get::<_, bool>(0),
-                        )?)
-                    }
-                })
-                .await
-                .unwrap();
-            if cached {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let fetched_during_sync = marker_requests.load(Ordering::SeqCst);
-    assert_eq!(fetched_during_sync, 1);
+    let (episode, imdb) = s.state.db.call(|c| Ok(c.query_row(
+        "SELECT episode.id,series.imdb_id FROM items episode JOIN items season ON season.id=episode.parent_id JOIN items series ON series.id=season.parent_id WHERE episode.remote_item_id='episode'",
+        [], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?)))?)).await.unwrap();
+    assert_eq!(imdb, "tt0903747");
+    assert_eq!(
+        marker_requests.load(Ordering::SeqCst),
+        0,
+        "sync must not request Jellyfin MediaSegments"
+    );
 
+    let cache_episode = episode.clone();
+    s.state.db.call(move |c| {
+        c.execute(
+            "INSERT INTO media_segments(item_id,payload,fetched_at) VALUES (?1,?2,?3)",
+            rusqlite::params![cache_episode, json!({"Intro":[{"StartTicks":10000000,"EndTicks":90000000}],"Source":"IntroDB.app"}).to_string(), jellymax::auth::now()],
+        )?;
+        Ok(())
+    }).await.unwrap();
     let (status, markers) = s
         .call("GET", &format!("/Items/{episode}/Segments"), None)
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(markers["Source"], "Jellyfin");
+    assert_eq!(markers["Source"], "IntroDB.app");
     assert_eq!(
         markers["Intro"][0],
         json!({"StartTicks":10000000,"EndTicks":90000000})
     );
     assert_eq!(
         marker_requests.load(Ordering::SeqCst),
-        fetched_during_sync,
-        "playback marker lookup must not contact the remote Jellyfin server"
+        0,
+        "playback must not request Jellyfin MediaSegments"
     );
     server.abort();
 }
@@ -495,6 +473,7 @@ async fn remote_movie_landscape_artwork_falls_back_to_tmdb() {
         image_base: format!("http://{address}/images/w500"),
         ..Default::default()
     };
+    s.state.provider_keys.write().unwrap().tmdb = Some("test-key".into());
     s.app = router(s.state.clone());
     let path = jellymax::tmdb::backdrop_path(&s.state, "movie/123").await;
     assert_eq!(path.as_deref(), Some("/movie-backdrop.jpg"));
@@ -1713,7 +1692,7 @@ fn upgrades_old_databases_before_creating_new_indexes() {
         assert_eq!(
             c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
         assert_eq!(
             c.query_row("SELECT name FROM items WHERE id='existing'", [], |r| r
@@ -1768,6 +1747,7 @@ async fn tmdb_metadata_and_artwork_survive_rescans_restart_and_refresh() {
         image_base: format!("http://{address}/images"),
         ..Default::default()
     };
+    s.state.provider_keys.write().unwrap().tmdb = Some("test-key".into());
     s.app = router(s.state.clone());
     // A second local file which resolves to the same TMDb movie is an
     // alternate copy, not another library tile. Keep the larger playable

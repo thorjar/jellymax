@@ -11,7 +11,7 @@ use axum::{
     http::{Method, StatusCode, header},
     response::Response,
 };
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::TryStreamExt;
 use reqwest::Url;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -390,157 +390,6 @@ pub(crate) async fn for_item(
     state.db.call(move|c|Ok(c.query_row("SELECT s.id,s.base_url,s.user_id,s.access_token,s.device_id,i.remote_item_id FROM items i JOIN remote_servers s ON s.id=i.remote_server_id WHERE i.id=?1",[item],|r|Ok((RemoteServer{id:r.get(0)?,base_url:r.get(1)?,user_id:r.get(2)?,token:r.get(3)?,device_id:r.get(4)?},r.get(5)?))).optional()?)).await
 }
 
-/// Read precomputed markers from Jellyfin outside the playback path.
-/// Missing/unsupported endpoints and empty responses are ignored so TheIntroDB
-/// remains available as the playback-time fallback.
-async fn fetch_media_segments(
-    state: &AppState,
-    server: &RemoteServer,
-    item: &str,
-    remote_item: &str,
-) -> Result<Option<Value>> {
-    let mut url = endpoint(server, &format!("MediaSegments/{remote_item}"))?;
-    url.query_pairs_mut()
-        .append_pair("includeSegmentTypes", "Intro");
-    let response = match authorized(state.http.get(url), server)
-        .timeout(std::time::Duration::from_secs(4))
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => {
-            tracing::warn!(%error, item, "Could not read remote Jellyfin media segments");
-            return Ok(None);
-        }
-    };
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    if !response.status().is_success() {
-        tracing::warn!(status=%response.status(), item, "Remote Jellyfin media segments unavailable");
-        return Ok(None);
-    }
-    let body: Value = match response.json().await {
-        Ok(body) => body,
-        Err(error) => {
-            tracing::warn!(%error, item, "Remote Jellyfin media segments response was invalid");
-            return Ok(None);
-        }
-    };
-    let intro = jellyfin_intro_segments(&body);
-    // Cache a successful empty response briefly. This prevents a server with
-    // no segment provider from being queried for every episode after every
-    // restart, while still allowing TheIntroDB to supply a fallback.
-    Ok(Some(json!({"Intro": intro, "Source": "Jellyfin"})))
-}
-
-pub(crate) async fn schedule_all_media_segment_caches(state: &AppState) -> Result<()> {
-    let servers = state
-        .db
-        .call(|db| {
-            let mut query = db.prepare(
-                "SELECT id,base_url,user_id,access_token,device_id FROM remote_servers ORDER BY id",
-            )?;
-            Ok(query
-                .query_map([], |row| {
-                    Ok(RemoteServer {
-                        id: row.get(0)?,
-                        base_url: row.get(1)?,
-                        user_id: row.get(2)?,
-                        token: row.get(3)?,
-                        device_id: row.get(4)?,
-                    })
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?)
-        })
-        .await?;
-    for server in servers {
-        schedule_media_segment_cache(state.clone(), server);
-    }
-    Ok(())
-}
-
-fn schedule_media_segment_cache(state: AppState, server: RemoteServer) {
-    tokio::spawn(async move {
-        let source_id = server.id.clone();
-        let episodes = match state
-            .db
-            .call(move |db| {
-                let mut query = db.prepare(
-                    "SELECT i.id,i.remote_item_id,m.payload,m.fetched_at
-                 FROM items i LEFT JOIN media_segments m ON m.item_id=i.id
-                 WHERE i.remote_server_id=?1 AND i.kind='Episode' AND i.remote_item_id IS NOT NULL
-                 ORDER BY i.modified DESC,i.id",
-                )?;
-                Ok(query
-                    .query_map([source_id], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, Option<String>>(2)?,
-                            row.get::<_, Option<i64>>(3)?,
-                        ))
-                    })?
-                    .collect::<std::result::Result<Vec<_>, _>>()?)
-            })
-            .await
-        {
-            Ok(episodes) => episodes,
-            Err(error) => {
-                tracing::warn!(%error, server=%server.id, "Could not list episodes for marker caching");
-                return;
-            }
-        };
-        let current_time = now();
-        futures_util::stream::iter(episodes.into_iter().filter(|(_, _, payload, fetched_at)| {
-            let cached = payload.as_deref()
-                .and_then(|payload| serde_json::from_str::<Value>(payload).ok());
-            let fresh = cached.as_ref().is_some_and(|value| {
-                if value.get("Source").and_then(Value::as_str) != Some("Jellyfin") {
-                    return false;
-                }
-                let has_markers = value.get("Intro").and_then(Value::as_array)
-                    .is_some_and(|segments| !segments.is_empty());
-                let lifetime = if has_markers { 7 * 24 * 60 * 60 } else { 5 * 60 };
-                fetched_at.is_some_and(|fetched_at| fetched_at >= current_time.saturating_sub(lifetime))
-            });
-            !fresh
-        }))
-        .for_each_concurrent(2, |(item, remote_item, _, _)| {
-            let state = state.clone();
-            let server = server.clone();
-            async move {
-                match fetch_media_segments(&state, &server, &item, &remote_item).await {
-                    Ok(Some(value)) => {
-                        if let Err(error) = crate::providers::store_segment_cache(&state, item.clone(), &value, now()).await {
-                            tracing::warn!(%error, %item, "Could not cache remote Jellyfin media segments");
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => tracing::warn!(%error, %item, "Could not fetch remote Jellyfin media segments"),
-                }
-            }
-        }).await;
-    });
-}
-
-fn jellyfin_intro_segments(body: &Value) -> Vec<Value> {
-    let mut segments = body
-        .get("Items")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|entry| entry.get("Type").and_then(Value::as_str) == Some("Intro"))
-        .filter_map(|entry| {
-            let start = entry.get("StartTicks").and_then(Value::as_i64)?.max(0);
-            let end = entry.get("EndTicks").and_then(Value::as_i64)?;
-            (end > start).then(|| json!({"StartTicks": start, "EndTicks": end}))
-        })
-        .collect::<Vec<_>>();
-    segments.sort_by_key(|segment| segment["StartTicks"].as_i64().unwrap_or_default());
-    segments
-}
-
 async fn sync_server(state: &AppState, server: &RemoteServer) -> Result<usize> {
     // Views is scoped to the connected user. Unlike Library/VirtualFolders it
     // does not require the remote account to be a server administrator.
@@ -601,10 +450,11 @@ async fn sync_server(state: &AppState, server: &RemoteServer) -> Result<usize> {
             for item in items {
                 let item_id=local_id(&source,&item.id);
                 let tmdb=item.provider_ids.as_ref().and_then(|v|v.get("Tmdb")).and_then(Value::as_str);
-                tx.execute("INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,tmdb_id,year,overview,genres,rating,index_number,parent_index_number,parent_id,scan_id,remote_server_id,remote_item_id)
-                    VALUES (?1,?2,?3,?4,?5,?6,?7,strftime('%s','now'),?8,?9,?10,?11,?12,?13,?14,?15,?16,NULL,?17,?18,?19)
-                    ON CONFLICT(id) DO UPDATE SET library_id=excluded.library_id,name=excluded.name,kind=excluded.kind,container=excluded.container,size=excluded.size,modified=CASE WHEN items.modified=0 THEN excluded.modified ELSE items.modified END,runtime_ticks=excluded.runtime_ticks,media_streams=excluded.media_streams,tmdb_id=excluded.tmdb_id,year=excluded.year,overview=excluded.overview,genres=excluded.genres,rating=excluded.rating,index_number=excluded.index_number,parent_index_number=excluded.parent_index_number,parent_id=NULL,scan_id=excluded.scan_id,remote_item_id=excluded.remote_item_id",
-                    params![item_id,library,format!("remote://{source}/{}",item.id),item.name,item.kind,item.container.clone().unwrap_or_default(),item.size.unwrap_or(0),item.run_time_ticks,serde_json::to_string(&item.media_streams).map_err(Error::internal)?,tmdb,item.production_year,item.overview,serde_json::to_string(&item.genres).map_err(Error::internal)?,item.community_rating,item.index_number,item.parent_index_number,marker,source,item.id])?;
+                let imdb=item.provider_ids.as_ref().and_then(|v|v.get("Imdb")).and_then(Value::as_str);
+                tx.execute("INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,tmdb_id,imdb_id,year,overview,genres,rating,index_number,parent_index_number,parent_id,scan_id,remote_server_id,remote_item_id)
+                    VALUES (?1,?2,?3,?4,?5,?6,?7,strftime('%s','now'),?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,NULL,?18,?19,?20)
+                    ON CONFLICT(id) DO UPDATE SET library_id=excluded.library_id,name=excluded.name,kind=excluded.kind,container=excluded.container,size=excluded.size,modified=CASE WHEN items.modified=0 THEN excluded.modified ELSE items.modified END,runtime_ticks=excluded.runtime_ticks,media_streams=excluded.media_streams,tmdb_id=excluded.tmdb_id,imdb_id=excluded.imdb_id,year=excluded.year,overview=excluded.overview,genres=excluded.genres,rating=excluded.rating,index_number=excluded.index_number,parent_index_number=excluded.parent_index_number,parent_id=NULL,scan_id=excluded.scan_id,remote_item_id=excluded.remote_item_id",
+                    params![item_id,library,format!("remote://{source}/{}",item.id),item.name,item.kind,item.container.clone().unwrap_or_default(),item.size.unwrap_or(0),item.run_time_ticks,serde_json::to_string(&item.media_streams).map_err(Error::internal)?,tmdb,imdb,item.production_year,item.overview,serde_json::to_string(&item.genres).map_err(Error::internal)?,item.community_rating,item.index_number,item.parent_index_number,marker,source,item.id])?;
             }
             for item in items {
                 if let Some(parent) = item
@@ -625,7 +475,7 @@ async fn sync_server(state: &AppState, server: &RemoteServer) -> Result<usize> {
         tx.execute("UPDATE remote_servers SET last_sync=?1,last_error=NULL WHERE id=?2",params![now(),source])?;
         tx.commit()?; Ok(())
     }).await?;
-    schedule_media_segment_cache(state.clone(), server.clone());
+    crate::providers::schedule_all_segment_caches(state).await?;
     Ok(count)
 }
 
@@ -1073,26 +923,6 @@ mod tests {
         ] {
             assert!(normalize_url(invalid).is_err());
         }
-    }
-
-    #[test]
-    fn normalizes_jellyfin_intro_markers() {
-        let body = json!({"Items": [
-            {"Type":"Outro","StartTicks":900,"EndTicks":1000},
-            {"Type":"Intro","StartTicks":300,"EndTicks":800},
-            {"Type":"Intro","StartTicks":100,"EndTicks":250},
-            {"Type":"Intro","StartTicks":500,"EndTicks":400},
-            {"Type":"Intro","StartTicks":-20,"EndTicks":50}
-        ]});
-        assert_eq!(
-            jellyfin_intro_segments(&body),
-            vec![
-                json!({"StartTicks":0,"EndTicks":50}),
-                json!({"StartTicks":100,"EndTicks":250}),
-                json!({"StartTicks":300,"EndTicks":800}),
-            ]
-        );
-        assert!(jellyfin_intro_segments(&json!({"Items":[]})).is_empty());
     }
 
     #[test]
