@@ -71,3 +71,30 @@ test("login page logo falls back to the icon tile when the svg is missing", asyn
   await expect(page.locator("form span.grid.bg-brand svg")).toBeVisible();
   await expect(page.locator("form img")).toHaveCount(0);
 });
+
+test("offline server libraries are dimmed and cannot be opened", async ({ page }) => {
+  await mockSession(page);
+  await page.route("**/Library/VirtualFolders", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify([
+      { ItemId: "local-library", Name: "Local Movies", CollectionType: "movies", IsRemote: false },
+      { ItemId: "remote-library", Name: "Offline Movies", CollectionType: "movies", IsRemote: true,
+        RemoteServerId: "remote-1", RemoteServerName: "Unavailable Jellyfin" },
+    ]),
+  }));
+  await page.route("**/RemoteServers/Status", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify([{ Id: "remote-1", Online: false }]),
+  }));
+  await page.goto("/");
+
+  const remoteNavigation = page.getByRole("navigation", { name: "Unavailable Jellyfin libraries" });
+  const disabledSidebarLibrary = remoteNavigation.getByRole("link", { name: "Offline Movies" });
+  await expect(disabledSidebarLibrary).toHaveAttribute("aria-disabled", "true");
+  await expect(disabledSidebarLibrary).not.toHaveAttribute("href");
+  await expect(page.getByText("Offline", { exact: true })).toBeVisible();
+
+  await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Libraries" }).click();
+  const disabledCard = page.getByRole("main").getByRole("link", { name: /Offline Movies/ });
+  await expect(disabledCard).toHaveAttribute("aria-disabled", "true");
+  await expect(disabledCard).not.toHaveAttribute("href");
+  await expect(page.getByRole("main").getByText(/Connected Jellyfin server.*Offline/)).toBeVisible();
+});

@@ -8,13 +8,21 @@ import { readCatalogCache, writeCatalogCache } from "../lib/catalogCache";
 import { LIBRARIES_CHANGED_EVENT } from "../lib/libraryEvents";
 import { groupLibraries } from "../lib/libraryGroups";
 
-function NavItem({ to, end, icon, children, onNavigate }: {
+function NavItem({ to, end, icon, children, onNavigate, disabled = false }: {
   to: string;
   end?: boolean;
   icon: string;
   children: string;
   onNavigate?: () => void;
+  disabled?: boolean;
 }) {
+  if (disabled) return (
+    <span role="link" aria-disabled="true" title="Server offline"
+      className="sidebar-link cursor-not-allowed opacity-40 grayscale">
+      <Icon path={icon} />
+      <span className="truncate">{children}</span>
+    </span>
+  );
   return (
     <NavLink to={to} end={end} onClick={onNavigate}
       className={({ isActive }) => `sidebar-link ${isActive ? "sidebar-link-active" : ""}`}>
@@ -99,7 +107,8 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             {group.remoteServerId && serverStatus[group.remoteServerId] === false && <span className="ml-auto normal-case tracking-normal text-danger">Offline</span>}
           </p>
           <nav className="space-y-1" aria-label={`${group.name} libraries`}>
-            {group.libraries.map(library => <NavItem key={library.ItemId} to={`/library/${library.ItemId}`} icon={ICONS.folder} onNavigate={onNavigate}>{library.Name}</NavItem>)}
+            {group.libraries.map(library => <NavItem key={library.ItemId} to={`/library/${library.ItemId}`} icon={ICONS.folder} onNavigate={onNavigate}
+              disabled={Boolean(group.remoteServerId && serverStatus[group.remoteServerId] === false)}>{library.Name}</NavItem>)}
           </nav>
         </div>)}
         {isAdmin&&<div className="my-6"><p className="mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-muted/70">Administration</p><nav aria-label="Admin"><NavItem to="/admin" icon={ICONS.admin} onNavigate={onNavigate}>Dashboard</NavItem></nav></div>}
