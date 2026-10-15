@@ -17,6 +17,7 @@ export function LibraryAdmin() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [localServerName, setLocalServerName] = useState("This server");
+  const [serverStatus, setServerStatus] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     try {
@@ -28,8 +29,17 @@ export function LibraryAdmin() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const refreshStatus = () => { void api.remoteServerStatuses()
+      .then(statuses => {
+        if (!cancelled) setServerStatus(Object.fromEntries(statuses.map(status => [status.Id, status.Online])));
+      })
+      .catch(() => {}); };
     void load();
-    void api.systemInfo().then(info => setLocalServerName(info.ServerName)).catch(() => {});
+    void api.systemInfo().then(info => { if (!cancelled) setLocalServerName(info.ServerName); }).catch(() => {});
+    refreshStatus();
+    const statusTimer = window.setInterval(refreshStatus, 30_000);
+    return () => { cancelled = true; window.clearInterval(statusTimer); };
   }, [load]);
 
   const groups = groupLibraries(libraries ?? [], localServerName);
@@ -124,14 +134,15 @@ export function LibraryAdmin() {
         </div>
       ) : (
         <div className="mt-5 space-y-7">
-          {groups.map(group => (
-            <section key={group.key} aria-label={`${group.name} libraries`}>
+          {groups.map(group => {
+            const offline = Boolean(group.remoteServerId && serverStatus[group.remoteServerId] === false);
+            return <section key={group.key} aria-label={`${group.name} libraries`} className={offline ? "opacity-50 grayscale" : ""}>
               <div className="mb-2 flex items-center gap-2 px-1">
-                <span className={`h-2.5 w-2.5 rounded-full ${group.isLocal ? "bg-brand" : "bg-emerald-400"}`} />
+                <span className={`h-2.5 w-2.5 rounded-full ${group.isLocal ? "bg-brand" : offline ? "bg-danger" : "bg-emerald-400"}`} />
                 <div>
                   <h3 className="font-semibold">{group.name}</h3>
                   <p className="text-xs text-ink-muted">
-                    {group.isLocal ? "Local server" : group.libraries[0]?.IsObjectStore ? "Object storage" : "Connected Jellyfin server"} · {group.libraries.length} {group.libraries.length === 1 ? "library" : "libraries"}
+                    {group.isLocal ? "Local server" : group.libraries[0]?.IsObjectStore ? "Object storage" : "Connected Jellyfin server"} · {group.libraries.length} {group.libraries.length === 1 ? "library" : "libraries"}{offline ? " · Offline" : ""}
                   </p>
                 </div>
               </div>
@@ -139,14 +150,21 @@ export function LibraryAdmin() {
                 {group.libraries.map(library => (
                   <li key={library.ItemId}
                     className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-                    <Link to={`/library/${library.ItemId}`}
+                    {offline ? <div role="link" aria-disabled="true" title="Server offline"
+                      className="min-w-0 flex-1 cursor-not-allowed rounded-md">
+                      <div className="font-medium">{library.Name}</div>
+                      <div className="muted truncate text-sm">
+                        {library.CollectionType}
+                        {library.Locations.length > 0 && ` · ${library.Locations.join(", ")}`}
+                      </div>
+                    </div> : <Link to={`/library/${library.ItemId}`}
                       className="min-w-0 flex-1 rounded-md transition hover:text-brand-strong focus-visible:outline-2 focus-visible:outline-brand">
                       <div className="font-medium">{library.Name}</div>
                       <div className="muted truncate text-sm">
                         {library.CollectionType}
                         {library.Locations.length > 0 && ` · ${library.Locations.join(", ")}`}
                       </div>
-                    </Link>
+                    </Link>}
                     {group.isLocal && (
                       <button className="btn btn-danger shrink-0"
                         onClick={() => remove(library.ItemId, library.Name)}>
@@ -156,8 +174,8 @@ export function LibraryAdmin() {
                   </li>
                 ))}
               </ul>
-            </section>
-          ))}
+            </section>;
+          })}
         </div>
       )}
 

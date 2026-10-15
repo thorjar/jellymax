@@ -76,13 +76,18 @@ test("offline server libraries are dimmed and cannot be opened", async ({ page }
   await mockSession(page);
   await page.route("**/Library/VirtualFolders", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify([
-      { ItemId: "local-library", Name: "Local Movies", CollectionType: "movies", IsRemote: false },
-      { ItemId: "remote-library", Name: "Offline Movies", CollectionType: "movies", IsRemote: true,
+      { ItemId: "local-library", Name: "Local Movies", CollectionType: "movies", Locations: ["/media"], IsRemote: false },
+      { ItemId: "remote-library", Name: "Offline Movies", CollectionType: "movies", Locations: [], IsRemote: true,
         RemoteServerId: "remote-1", RemoteServerName: "Unavailable Jellyfin" },
     ]),
   }));
   await page.route("**/RemoteServers/Status", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify([{ Id: "remote-1", Online: false }]),
+  }));
+  await page.route("**/RemoteServers", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify([
+      { Id: "remote-1", Name: "Unavailable Jellyfin", Url: "https://offline.example", ServerId: "upstream" },
+    ]),
   }));
   await page.goto("/");
 
@@ -97,4 +102,15 @@ test("offline server libraries are dimmed and cannot be opened", async ({ page }
   await expect(disabledCard).toHaveAttribute("aria-disabled", "true");
   await expect(disabledCard).not.toHaveAttribute("href");
   await expect(page.getByRole("main").getByText(/Connected Jellyfin server.*Offline/)).toBeVisible();
+
+  await page.getByRole("navigation", { name: "Admin" }).getByRole("link", { name: "Dashboard" }).click();
+  await expect(page).toHaveURL(/\/admin$/);
+  await expect(page.getByRole("heading", { name: "Administration", exact: true })).toBeVisible();
+  const adminLibrary = page.getByRole("main").getByRole("link", { name: /Offline Movies/ });
+  await expect(adminLibrary).toHaveAttribute("aria-disabled", "true");
+  await expect(adminLibrary).not.toHaveAttribute("href");
+  await page.getByRole("tab", { name: "Remote servers" }).click();
+  await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Sync", exact: true })).toHaveAttribute("title", "Server offline");
+  await expect(page.getByRole("button", { name: "Disconnect", exact: true })).toBeEnabled();
 });
