@@ -688,7 +688,7 @@ export function Player({ item }: PlayerProps) {
                   <button type="button" aria-label="Subtitles" aria-expanded={subtitleMenuOpen} aria-haspopup="menu"
                     onClick={() => { setSubtitleMenuOpen(!subtitleMenuOpen); setAudioMenuOpen(false); setControlsVisible(true); }}
                     className={`rounded-full p-2 hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-brand ${selectedSubtitle !== null ? "text-brand-strong" : ""}`}><PlaybackIcon name="captions" /></button>
-                  {subtitleMenuOpen && <div role="menu" aria-label="Subtitle tracks" className="absolute bottom-full right-0 z-20 mb-2 max-h-80 min-w-56 overflow-y-auto rounded-lg border border-white/15 bg-surface-raised p-1 shadow-xl">
+                  {subtitleMenuOpen && <div role="menu" aria-label="Subtitle tracks" className="fixed inset-x-3 bottom-3 z-50 max-h-[calc(100dvh-1.5rem)] min-w-0 overscroll-contain overflow-y-auto rounded-lg border border-white/15 bg-surface-raised p-1 shadow-xl sm:absolute sm:inset-x-auto sm:bottom-full sm:right-0 sm:z-20 sm:mb-2 sm:max-h-80 sm:w-auto sm:min-w-56">
                     {subtitleLoading && <p className="px-3 py-1 text-xs text-white/65">Loading subtitles…</p>}
                     {subtitleError && <p className="px-3 py-1 text-xs text-amber-300" role="status">{subtitleError}</p>}
                     <button type="button" role="menuitemradio" aria-checked={selectedSubtitle === null}

@@ -100,6 +100,28 @@ test("Skip Intro keeps a stable fullscreen hit target", async ({ page }) => {
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeGreaterThanOrEqual(5);
 });
 
+test("subtitle menu stays inside a phone viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.getByRole("main").getByRole("link", { name: /^Movies Movies$/ }).click();
+  await page.getByRole("link", { name: /Windowed Subtitles/ }).click();
+  await page.getByRole("link", { name: "▶ Play", exact: true }).click();
+  await page.getByRole("button", { name: "Subtitles", exact: true }).click();
+  const menu = page.getByRole("menu", { name: "Subtitle tracks" });
+  await expect(menu).toBeVisible();
+  const assertInsideViewport = async () => {
+    const box = await menu.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.y).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(320);
+    expect(box!.y + box!.height).toBeLessThanOrEqual(568);
+  };
+  await assertInsideViewport();
+  await page.getByRole("menuitem", { name: "Get more from OpenSubtitles…" }).click();
+  await expect(page.getByRole("textbox", { name: "Subtitle language" })).toBeVisible();
+  await assertInsideViewport();
+});
+
 test("connected Jellyfin intro markers take priority", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const token = localStorage.getItem("jellymax_token") ?? "";
