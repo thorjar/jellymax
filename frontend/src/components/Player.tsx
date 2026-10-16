@@ -609,7 +609,7 @@ export function Player({ item }: PlayerProps) {
   return <div className={`mx-auto ${isAudio ? "max-w-2xl" : "max-w-4xl"}`}>
     {isAudio ? <audio {...commonProps} ref={mediaRef as RefObject<HTMLAudioElement>}
       className="w-full rounded-xl border border-edge bg-surface-raised p-3" />
-      : <div ref={frameRef} className={`jellymax-player-frame ${isWindowsBrowser ? "jellymax-windows-player" : ""} group relative overflow-hidden bg-black ${fullscreen ? "h-screen w-screen rounded-none border-0 shadow-none" : "rounded-xl border border-edge shadow-lg"} ${fullscreen && !playerControlsShown ? "cursor-none" : ""}`}
+      : <div ref={frameRef} className={`jellymax-player-frame ${isWindowsBrowser ? "jellymax-windows-player" : ""} group relative bg-black ${subtitleMenuOpen ? "overflow-visible sm:overflow-hidden" : "overflow-hidden"} ${fullscreen ? "h-screen w-screen rounded-none border-0 shadow-none" : "rounded-xl border border-edge shadow-lg"} ${fullscreen && !playerControlsShown ? "cursor-none" : ""}`}
           onPointerMove={revealControls} onMouseMove={revealControls}
           onMouseLeave={() => {
             if (!fullscreen && playing && !subtitleMenuOpen && !audioMenuOpen) setControlsVisible(false);

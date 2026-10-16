@@ -108,6 +108,7 @@ test("subtitle menu stays inside a phone viewport", async ({ page }) => {
   await page.getByRole("button", { name: "Subtitles", exact: true }).click();
   const menu = page.getByRole("menu", { name: "Subtitle tracks" });
   await expect(menu).toBeVisible();
+  await expect(page.locator(".jellymax-player-frame")).toHaveCSS("overflow", "visible");
   const assertInsideViewport = async () => {
     const box = await menu.boundingBox();
     expect(box).not.toBeNull();
