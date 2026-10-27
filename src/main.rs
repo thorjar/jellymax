@@ -207,23 +207,6 @@ fn open_browser(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::resolve_web_dir;
-
-    #[test]
-    fn explicit_web_directory_must_contain_an_index() {
-        let directory = tempfile::tempdir().unwrap();
-        assert!(resolve_web_dir(Some(directory.path().to_path_buf())).is_err());
-        std::fs::write(directory.path().join("index.html"), "<!doctype html>").unwrap();
-        assert_eq!(
-            resolve_web_dir(Some(directory.path().to_path_buf()))
-                .unwrap()
-                .unwrap(),
-            directory.path()
-        );
-    }
-}
 async fn shutdown() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
@@ -241,4 +224,22 @@ async fn shutdown() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
     tokio::select! {_=ctrl_c=>{},_=terminate=>{}}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_web_dir;
+
+    #[test]
+    fn explicit_web_directory_must_contain_an_index() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(resolve_web_dir(Some(directory.path().to_path_buf())).is_err());
+        std::fs::write(directory.path().join("index.html"), "<!doctype html>").unwrap();
+        assert_eq!(
+            resolve_web_dir(Some(directory.path().to_path_buf()))
+                .unwrap()
+                .unwrap(),
+            directory.path()
+        );
+    }
 }
