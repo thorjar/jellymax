@@ -16,8 +16,17 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const INTRODB_API: &str = "https://api.theintrodb.org/v3";
+const INTRODB_API: &str = "https://api.theintrodb.org/v4";
 const SEGMENT_CACHE_SECONDS: i64 = 7 * 24 * 60 * 60;
+
+struct IntroMetadata {
+    tvdb_id: Option<String>,
+    tmdb_id: Option<String>,
+    season: Option<i64>,
+    episode: Option<i64>,
+    duration_ticks: Option<i64>,
+    episode_order: Option<String>,
+}
 
 #[derive(Clone, Default)]
 pub struct ProviderKeys {
@@ -223,14 +232,24 @@ pub async fn segments(
     Path(item_id): Path<String>,
 ) -> Result<Json<Value>> {
     let lookup_id = item_id.clone();
-    let metadata: (Option<String>, Option<i64>, Option<i64>, Option<i64>) = state
+    let metadata: IntroMetadata = state
         .db
         .call(move |db| {
             db.query_row(
-                "SELECT (SELECT tmdb_id FROM items series WHERE series.id=(SELECT parent_id FROM items season WHERE season.id=i.parent_id)),i.parent_index_number,i.index_number,i.runtime_ticks
+                "SELECT (SELECT tvdb_id FROM items series WHERE series.id=(SELECT parent_id FROM items season WHERE season.id=i.parent_id)),
+                        (SELECT tmdb_id FROM items series WHERE series.id=(SELECT parent_id FROM items season WHERE season.id=i.parent_id)),
+                        i.parent_index_number,i.index_number,i.runtime_ticks,
+                        (SELECT episode_order FROM items series WHERE series.id=(SELECT parent_id FROM items season WHERE season.id=i.parent_id))
                  FROM items i WHERE i.id=?1 AND i.kind='Episode'",
                 [lookup_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok(IntroMetadata {
+                    tvdb_id: row.get(0)?,
+                    tmdb_id: row.get(1)?,
+                    season: row.get(2)?,
+                    episode: row.get(3)?,
+                    duration_ticks: row.get(4)?,
+                    episode_order: row.get(5)?,
+                }),
             )
             .optional()?
             .ok_or_else(Error::missing)
@@ -281,33 +300,49 @@ pub async fn segments(
         return Ok(Json(value));
     }
 
-    let (Some(tmdb_id), Some(season), Some(episode), duration_ticks) = metadata else {
+    let (Some(season), Some(episode)) = (metadata.season, metadata.episode) else {
         return Ok(Json(json!({"Intro":[],"Source":"None"})));
     };
-    if !tmdb_id.bytes().all(|byte| byte.is_ascii_digit()) {
+    let identity = metadata
+        .tvdb_id
+        .as_deref()
+        .filter(|id| id.bytes().all(|byte| byte.is_ascii_digit()))
+        .map(|id| ("tvdb_id", id))
+        .or_else(|| {
+            metadata
+                .tmdb_id
+                .as_deref()
+                .filter(|id| id.bytes().all(|byte| byte.is_ascii_digit()))
+                .map(|id| ("tmdb_id", id))
+        });
+    let Some((identity_name, identity_value)) = identity else {
         return Ok(Json(json!({"Intro":[],"Source":"None"})));
-    }
+    };
     let base = if cfg!(debug_assertions) {
         std::env::var("JELLYMAX_INTRODB_TEST_BASE").unwrap_or_else(|_| INTRODB_API.into())
     } else {
         INTRODB_API.into()
     };
+    let mut query = vec![
+        (identity_name, identity_value.to_owned()),
+        ("season", season.to_string()),
+        ("episode", episode.to_string()),
+        (
+            "mapping",
+            metadata.episode_order.unwrap_or_else(|| "default".into()),
+        ),
+    ];
+    if let Some(duration_ticks) = metadata.duration_ticks {
+        query.push((
+            "duration_ms",
+            duration_ticks.saturating_div(10_000).to_string(),
+        ));
+    }
     let mut request = state
         .http
         .get(format!("{base}/media"))
         .timeout(std::time::Duration::from_secs(4))
-        .query(&[
-            ("tmdb_id", tmdb_id),
-            ("season", season.to_string()),
-            ("episode", episode.to_string()),
-            (
-                "duration_ms",
-                duration_ticks
-                    .unwrap_or(0)
-                    .saturating_div(10_000)
-                    .to_string(),
-            ),
-        ]);
+        .query(&query);
     if let Some(key) = state.provider_key("introdb") {
         request = request.bearer_auth(key);
     }
@@ -330,6 +365,12 @@ pub async fn segments(
                 "TheIntroDB returned an invalid response".into(),
             )
         })?;
+        if body.get("tvdb_id").and_then(Value::as_u64).is_none() {
+            return Err(Error(
+                StatusCode::BAD_GATEWAY,
+                "TheIntroDB returned an invalid v4 response".into(),
+            ));
+        }
         let intro = intro_segments(&body);
         json!({"Intro":intro,"Source":"TheIntroDB"})
     };
@@ -348,6 +389,16 @@ mod tests {
             cache_lifetime(&json!({"Intro":[{"StartTicks":0,"EndTicks":1}]})),
             SEGMENT_CACHE_SECONDS
         );
+    }
+
+    #[test]
+    fn introdb_uses_v4_media_endpoint_and_tvdb_keyed_response() {
+        let url = url::Url::parse(&format!("{INTRODB_API}/media")).unwrap();
+        assert_eq!(url.path(), "/v4/media");
+        let body = json!({"tvdb_id":71663,"type":"tv","season":1,"episode":1,"intro":[{"start_ms":30_000,"end_ms":90_000}]});
+        assert_eq!(body["tvdb_id"], 71663);
+        assert!(body.get("tmdb_id").is_none());
+        assert_eq!(intro_segments(&body).len(), 1);
     }
 
     #[test]

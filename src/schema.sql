@@ -29,8 +29,8 @@ CREATE TABLE IF NOT EXISTS items(
     path TEXT NOT NULL UNIQUE, name TEXT NOT NULL, kind TEXT NOT NULL,
     container TEXT NOT NULL, size INTEGER NOT NULL, modified INTEGER NOT NULL,
     runtime_ticks INTEGER, media_streams TEXT NOT NULL DEFAULT '[]',
-    tmdb_id TEXT, year INTEGER, overview TEXT, genres TEXT NOT NULL DEFAULT '[]', rating REAL,
-    index_number INTEGER, parent_index_number INTEGER,
+    tmdb_id TEXT, tvdb_id TEXT, year INTEGER, overview TEXT, genres TEXT NOT NULL DEFAULT '[]', rating REAL,
+    index_number INTEGER, parent_index_number INTEGER, episode_order TEXT,
     parent_id TEXT REFERENCES items(id) ON DELETE CASCADE, scan_id TEXT NOT NULL,
     remote_server_id TEXT, remote_item_id TEXT
 );
@@ -75,4 +75,4 @@ CREATE TABLE IF NOT EXISTS media_segments(
     item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
     payload TEXT NOT NULL, fetched_at INTEGER NOT NULL
 );
-PRAGMA user_version = 10;
+PRAGMA user_version = 11;

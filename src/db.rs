@@ -14,7 +14,7 @@ impl Database {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 10 {
+        if version > 11 {
             return Err(Error::internal(
                 "Database was created by a newer server version",
             ));
@@ -166,6 +166,8 @@ fn migrate_items_metadata(connection: &Connection) -> Result<()> {
         .collect::<std::result::Result<Vec<_>, _>>()?;
     for (column, ddl) in [
         ("tmdb_id", "TEXT"),
+        ("tvdb_id", "TEXT"),
+        ("episode_order", "TEXT"),
         ("year", "INTEGER"),
         ("overview", "TEXT"),
         ("genres", "TEXT NOT NULL DEFAULT '[]'"),

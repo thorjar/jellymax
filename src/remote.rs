@@ -99,6 +99,25 @@ struct RemoteItem {
     community_rating: Option<f64>,
     index_number: Option<i64>,
     parent_index_number: Option<i64>,
+    display_order: Option<String>,
+}
+
+fn canonical_episode_order(value: Option<&str>) -> Option<String> {
+    let normalized = value?
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    let order = match normalized.as_str() {
+        "default" | "defaultorder" => "default",
+        "official" | "officialorder" | "aired" | "airedorder" => "official",
+        "dvd" | "altdvd" | "dvdorder" => "dvd",
+        "alternate" | "alternateorder" | "alttwo" | "streaming" | "streamingorder" => "alternate",
+        "absolute" | "absoluteorder" | "abso" => "absolute",
+        "regional" | "regionalorder" | "production" | "productionorder" => "regional",
+        _ => return None,
+    };
+    Some(order.to_owned())
 }
 
 fn upstream(message: impl std::fmt::Display) -> Error {
@@ -479,7 +498,7 @@ async fn sync_server(state: &AppState, server: &RemoteServer) -> Result<usize> {
         }
         .to_owned();
         let mut url = endpoint(server, "Items")?;
-        url.query_pairs_mut().append_pair("ParentId",&remote_library).append_pair("Recursive","true").append_pair("IncludeItemTypes","Movie,Series,Season,Episode,Audio").append_pair("Fields","MediaSources,MediaStreams,Overview,Genres,ProviderIds,ParentId,IndexNumber,ParentIndexNumber").append_pair("Limit","100000");
+        url.query_pairs_mut().append_pair("ParentId",&remote_library).append_pair("Recursive","true").append_pair("IncludeItemTypes","Movie,Series,Season,Episode,Audio").append_pair("Fields","MediaSources,MediaStreams,Overview,Genres,ProviderIds,ParentId,IndexNumber,ParentIndexNumber,DisplayOrder").append_pair("Limit","100000");
         let page: ItemPage = checked(
             authorized(state.http.get(url), server)
                 .send()
@@ -509,10 +528,12 @@ async fn sync_server(state: &AppState, server: &RemoteServer) -> Result<usize> {
             for item in items {
                 let item_id=local_id(&source,&item.id);
                 let tmdb=item.provider_ids.as_ref().and_then(|v|v.get("Tmdb")).and_then(Value::as_str);
-                tx.execute("INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,tmdb_id,year,overview,genres,rating,index_number,parent_index_number,parent_id,scan_id,remote_server_id,remote_item_id)
-                    VALUES (?1,?2,?3,?4,?5,?6,?7,strftime('%s','now'),?8,?9,?10,?11,?12,?13,?14,?15,?16,NULL,?17,?18,?19)
-                    ON CONFLICT(id) DO UPDATE SET library_id=excluded.library_id,name=excluded.name,kind=excluded.kind,container=excluded.container,size=excluded.size,modified=CASE WHEN items.modified=0 THEN excluded.modified ELSE items.modified END,runtime_ticks=excluded.runtime_ticks,media_streams=excluded.media_streams,tmdb_id=excluded.tmdb_id,year=excluded.year,overview=excluded.overview,genres=excluded.genres,rating=excluded.rating,index_number=excluded.index_number,parent_index_number=excluded.parent_index_number,parent_id=NULL,scan_id=excluded.scan_id,remote_item_id=excluded.remote_item_id",
-                    params![item_id,library,format!("remote://{source}/{}",item.id),item.name,item.kind,item.container.clone().unwrap_or_default(),item.size.unwrap_or(0),item.run_time_ticks,serde_json::to_string(&item.media_streams).map_err(Error::internal)?,tmdb,item.production_year,item.overview,serde_json::to_string(&item.genres).map_err(Error::internal)?,item.community_rating,item.index_number,item.parent_index_number,marker,source,item.id])?;
+                let tvdb=item.provider_ids.as_ref().and_then(|v|v.get("Tvdb")).and_then(Value::as_str);
+                let episode_order=canonical_episode_order(item.display_order.as_deref());
+                tx.execute("INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,tmdb_id,tvdb_id,year,overview,genres,rating,index_number,parent_index_number,episode_order,parent_id,scan_id,remote_server_id,remote_item_id)
+                    VALUES (?1,?2,?3,?4,?5,?6,?7,strftime('%s','now'),?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,NULL,?19,?20,?21)
+                    ON CONFLICT(id) DO UPDATE SET library_id=excluded.library_id,name=excluded.name,kind=excluded.kind,container=excluded.container,size=excluded.size,modified=CASE WHEN items.modified=0 THEN excluded.modified ELSE items.modified END,runtime_ticks=excluded.runtime_ticks,media_streams=excluded.media_streams,tmdb_id=excluded.tmdb_id,tvdb_id=excluded.tvdb_id,year=excluded.year,overview=excluded.overview,genres=excluded.genres,rating=excluded.rating,index_number=excluded.index_number,parent_index_number=excluded.parent_index_number,episode_order=excluded.episode_order,parent_id=NULL,scan_id=excluded.scan_id,remote_item_id=excluded.remote_item_id",
+                    params![item_id,library,format!("remote://{source}/{}",item.id),item.name,item.kind,item.container.clone().unwrap_or_default(),item.size.unwrap_or(0),item.run_time_ticks,serde_json::to_string(&item.media_streams).map_err(Error::internal)?,tmdb,tvdb,item.production_year,item.overview,serde_json::to_string(&item.genres).map_err(Error::internal)?,item.community_rating,item.index_number,item.parent_index_number,episode_order,marker,source,item.id])?;
             }
             for item in items {
                 if let Some(parent) = item
@@ -980,6 +1001,31 @@ mod tests {
         ] {
             assert!(normalize_url(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn canonicalizes_jellyfin_episode_orders_for_introdb_v4() {
+        assert_eq!(
+            canonical_episode_order(Some("Aired")),
+            Some("official".into())
+        );
+        assert_eq!(
+            canonical_episode_order(Some("dvd-order")),
+            Some("dvd".into())
+        );
+        assert_eq!(
+            canonical_episode_order(Some("AbsoluteOrder")),
+            Some("absolute".into())
+        );
+        assert_eq!(
+            canonical_episode_order(Some("alttwo")),
+            Some("alternate".into())
+        );
+        assert_eq!(
+            canonical_episode_order(Some("Production")),
+            Some("regional".into())
+        );
+        assert_eq!(canonical_episode_order(Some("unknown")), None);
     }
 
     #[test]

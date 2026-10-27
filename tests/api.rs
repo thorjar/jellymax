@@ -1631,7 +1631,7 @@ fn upgrades_old_databases_before_creating_new_indexes() {
         assert_eq!(
             c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         assert_eq!(
             c.query_row("SELECT name FROM items WHERE id='existing'", [], |r| r
@@ -1641,7 +1641,7 @@ fn upgrades_old_databases_before_creating_new_indexes() {
             .unwrap(),
             "Keep me"
         );
-        c.prepare("SELECT parent_id,index_number,parent_index_number,tmdb_id FROM items")
+        c.prepare("SELECT parent_id,index_number,parent_index_number,tmdb_id,tvdb_id,episode_order FROM items")
             .unwrap();
     }
 }
