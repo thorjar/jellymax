@@ -16,6 +16,8 @@ For a production build served together with the backend, see [Docker deployment]
 
 - Sign in via `POST /Users/AuthenticateByName`; the access token is stored and
   sent on every request as the `X-Emby-Token` header.
+- Approve Jellyfin Quick Connect-compatible device sign-ins from the EasyLink
+  page using the six-digit code shown on the external client.
 - Browse libraries and their media, with pagination and per-library filtering.
 - Global search (`GET /Items?SearchTerm=`).
 - Item detail with local artwork, stream metadata, favorite / watched toggles,

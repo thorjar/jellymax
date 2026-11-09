@@ -136,9 +136,15 @@ pub fn router(state: AppState) -> Router {
         .route("/System/Info/Public", get(public_info))
         .route("/System/Setup", post(auth::setup))
         .route("/Users/AuthenticateByName", post(auth::login))
+        .route(
+            "/Users/AuthenticateWithQuickConnect",
+            post(pairing::authenticate),
+        )
         .route("/Users/Me", get(auth::me))
+        .route("/QuickConnect/Enabled", get(pairing::enabled))
         .route("/QuickConnect/Initiate", post(pairing::initiate))
         .route("/QuickConnect/Connect", get(pairing::connect))
+        .route("/QuickConnect/Authorize", post(pairing::authorize))
         .route("/QuickConnect/Approve", post(pairing::approve))
         .route("/Users", get(auth::users))
         .route("/Users/", get(auth::users))

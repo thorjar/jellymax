@@ -95,6 +95,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           <NavItem to="/resume" icon={ICONS.play} onNavigate={onNavigate}>Resume</NavItem>
           <NavItem to="/favorites" icon={ICONS.star} onNavigate={onNavigate}>Favorites</NavItem>
           <NavItem to="/playlists" icon={ICONS.list} onNavigate={onNavigate}>Playlists</NavItem>
+          <NavItem to="/easylink" icon={ICONS.link} onNavigate={onNavigate}>EasyLink</NavItem>
         </nav>
         {groups.map(group => <div className="mt-6" key={group.key}>
           <p className="mb-1.5 flex items-center gap-2 px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-muted/70">

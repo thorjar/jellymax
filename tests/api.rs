@@ -1029,39 +1029,45 @@ async fn marking_unplayed_resets_the_resume_position() {
     assert_eq!(item_data["UserData"]["PlaybackPositionTicks"], 0);
 }
 #[tokio::test]
-async fn pairing_codes_are_single_use_and_sign_in_the_approving_user() {
+async fn easylink_matches_jellyfin_quick_connect_and_issues_a_single_session() {
     let s = TestServer::new().await;
     let (other, other_token) = s.other_user().await;
-    let (status, initiated) = send(
-        &s.app,
-        "POST",
-        "/QuickConnect/Initiate",
-        None,
-        Some(json!({"DeviceName":"Apple TV"})),
-    )
-    .await;
+
+    let (status, enabled) = send(&s.app, "GET", "/QuickConnect/Enabled", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(enabled, true);
+
+    // Jellyfin initiates Quick Connect without a JSON request body.
+    let (status, initiated) = send(&s.app, "POST", "/QuickConnect/Initiate", None, None).await;
     assert_eq!(status, StatusCode::OK);
     let code = initiated["Code"].as_str().unwrap().to_string();
-    assert_eq!(code.len(), 8);
-    assert_eq!(initiated["ExpiresIn"], 300);
-    // The code does nothing until a signed-in user approves it.
+    let secret = initiated["Secret"].as_str().unwrap().to_string();
+    assert_eq!(code.len(), 6);
+    assert!(code.chars().all(|character| character.is_ascii_digit()));
+    assert_eq!(secret.len(), 64);
+    assert_eq!(initiated["Authenticated"], false);
+    assert!(initiated["DateAdded"].is_string());
+
     let (status, pending) = send(
         &s.app,
         "GET",
-        &format!("/QuickConnect/Connect?Code={code}"),
+        &format!("/QuickConnect/Connect?secret={secret}"),
         None,
         None,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(pending["Authenticated"], false);
+    assert_eq!(pending["Code"], code);
+    assert!(pending.get("AccessToken").is_none());
+
     assert_eq!(
         send(
             &s.app,
             "POST",
-            "/QuickConnect/Approve",
+            &format!("/QuickConnect/Authorize?code={code}"),
             None,
-            Some(json!({"Code":code}))
+            None,
         )
         .await
         .0,
@@ -1071,65 +1077,74 @@ async fn pairing_codes_are_single_use_and_sign_in_the_approving_user() {
         send(
             &s.app,
             "POST",
-            "/QuickConnect/Approve",
+            "/QuickConnect/Authorize?code=000000",
             Some(&other_token),
-            Some(json!({"Code":"ZZZZZZZZ"}))
+            None,
         )
         .await
         .0,
         StatusCode::NOT_FOUND
     );
-    // Codes are read off a screen, so spacing and case are ignored.
-    let spaced = format!("{} {}", &code[..4], &code[4..]).to_lowercase();
     assert_eq!(
         send(
             &s.app,
             "POST",
-            "/QuickConnect/Approve",
+            &format!("/QuickConnect/Authorize?code={code}"),
             Some(&other_token),
-            Some(json!({"Code":spaced}))
+            None,
         )
-        .await
-        .0,
-        StatusCode::OK
+        .await,
+        (StatusCode::OK, json!(true))
     );
-    // A second user cannot take over an approved code.
+    // A second user cannot redirect an already-approved request.
     assert_eq!(
         send(
             &s.app,
             "POST",
-            "/QuickConnect/Approve",
+            &format!("/QuickConnect/Authorize?code={code}"),
             Some(&s.token),
-            Some(json!({"Code":code}))
+            None,
         )
         .await
         .0,
         StatusCode::CONFLICT
     );
-    let (status, claimed) = send(
+
+    let (_, approved) = send(
         &s.app,
         "GET",
-        &format!("/QuickConnect/Connect?Code={code}"),
+        &format!("/QuickConnect/Connect?secret={secret}"),
         None,
         None,
     )
     .await;
+    assert_eq!(approved["Authenticated"], true);
+    assert!(approved.get("AccessToken").is_none());
+
+    let (status, claimed) = send(
+        &s.app,
+        "POST",
+        "/Users/AuthenticateWithQuickConnect",
+        None,
+        Some(json!({"Secret":secret})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(claimed["Authenticated"], true);
     assert_eq!(claimed["User"]["Id"], other.as_str());
     assert_eq!(claimed["User"]["Policy"]["IsAdministrator"], false);
-    let token = claimed["AccessToken"].as_str().unwrap().to_string();
-    let (status, me) = send(&s.app, "GET", "/Users/Me", Some(&token), None).await;
+    let token = claimed["AccessToken"].as_str().unwrap();
+    let (status, me) = send(&s.app, "GET", "/Users/Me", Some(token), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(me["Id"], other.as_str());
-    // Claiming consumes the code.
+
+    // The secret is consumed by the token exchange.
     assert_eq!(
         send(
             &s.app,
-            "GET",
-            &format!("/QuickConnect/Connect?Code={code}"),
+            "POST",
+            "/Users/AuthenticateWithQuickConnect",
             None,
-            None
+            Some(json!({"Secret":secret})),
         )
         .await
         .0,
@@ -1631,7 +1646,7 @@ fn upgrades_old_databases_before_creating_new_indexes() {
         assert_eq!(
             c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            11
+            12
         );
         assert_eq!(
             c.query_row("SELECT name FROM items WHERE id='existing'", [], |r| r

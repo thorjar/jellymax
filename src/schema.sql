@@ -66,13 +66,16 @@ CREATE INDEX IF NOT EXISTS playlist_items_item ON playlist_items(item_id);
 CREATE INDEX IF NOT EXISTS playback_tickets_item ON playback_tickets(item_id);
 CREATE INDEX IF NOT EXISTS sessions_user_expiry ON sessions(user_id,expires_at);
 CREATE TABLE IF NOT EXISTS pairings(
-    code TEXT PRIMARY KEY, device_name TEXT NOT NULL DEFAULT '',
+    code TEXT PRIMARY KEY, secret TEXT NOT NULL UNIQUE,
+    device_id TEXT NOT NULL DEFAULT '', device_name TEXT NOT NULL DEFAULT '',
+    app_name TEXT NOT NULL DEFAULT '', app_version TEXT NOT NULL DEFAULT '',
     user_id TEXT REFERENCES users(id) ON DELETE CASCADE, approved_at INTEGER,
     created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pairings_expiry ON pairings(expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS pairings_secret ON pairings(secret) WHERE secret<>'';
 CREATE TABLE IF NOT EXISTS media_segments(
     item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
     payload TEXT NOT NULL, fetched_at INTEGER NOT NULL
 );
-PRAGMA user_version = 11;
+PRAGMA user_version = 12;

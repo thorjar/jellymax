@@ -196,6 +196,11 @@ export const api = {
     }),
   logout: () => request<void>("/Sessions/Logout", { method: "POST" }),
   me: () => request<User>("/Users/Me"),
+  authorizeEasyLink: (code: string, userId?: string) => {
+    const query = new URLSearchParams({ code });
+    if (userId) query.set("userId", userId);
+    return request<boolean>(`/QuickConnect/Authorize?${query}`, { method: "POST" });
+  },
 
   // Admin: users
   users: () => request<User[]>("/Users/"),
