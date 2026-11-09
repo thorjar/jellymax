@@ -14,7 +14,7 @@ impl Database {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 11 {
+        if version > 12 {
             return Err(Error::internal(
                 "Database was created by a newer server version",
             ));
@@ -26,6 +26,7 @@ impl Database {
             migrate_items_parent(&tx)?;
             migrate_remote_columns(&tx)?;
             migrate_remote_device(&tx)?;
+            migrate_pairings(&tx)?;
             let object_store_column: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM pragma_table_info('libraries') WHERE name='object_store_id')",
                 [], |row| row.get(0),
@@ -94,6 +95,43 @@ impl Database {
         .await
         .map_err(Error::internal)?
     }
+}
+
+fn migrate_pairings(connection: &Connection) -> Result<()> {
+    let table_exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='pairings')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(());
+    }
+    for (column, definition) in [
+        ("secret", "TEXT NOT NULL DEFAULT ''"),
+        ("device_id", "TEXT NOT NULL DEFAULT ''"),
+        ("app_name", "TEXT NOT NULL DEFAULT ''"),
+        ("app_version", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('pairings') WHERE name=?1)",
+            [column],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            connection.execute(
+                &format!("ALTER TABLE pairings ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
+    }
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS pairings_secret ON pairings(secret) WHERE secret<>''",
+        [],
+    )?;
+    // Requests created by the pre-EasyLink prototype have no private secret
+    // and cannot participate in the Jellyfin-compatible exchange.
+    connection.execute("DELETE FROM pairings WHERE secret=''", [])?;
+    Ok(())
 }
 
 fn migrate_remote_device(connection: &Connection) -> Result<()> {

@@ -1,10 +1,16 @@
-name: Publish Jellymax images
+name: Publish latest Jellymax Docker images
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - jellymax-v*
+
+concurrency:
+  group: jellymax-images-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

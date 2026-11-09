@@ -14,6 +14,7 @@ import { PlaylistDetailPage } from "./pages/PlaylistDetailPage";
 import { PlaylistsPage } from "./pages/PlaylistsPage";
 import { ResumePage } from "./pages/ResumePage";
 import { SearchPage } from "./pages/SearchPage";
+import { EasyLinkPage } from "./pages/EasyLinkPage";
 
 function AdminRoute() {
   const { user } = useAuth();
@@ -39,6 +40,7 @@ export default function App() {
           <Route path="/search" element={<SearchPage />} />
           <Route path="/playlists" element={<PlaylistsPage />} />
           <Route path="/playlists/:id" element={<PlaylistDetailPage />} />
+          <Route path="/easylink" element={<EasyLinkPage />} />
           <Route element={<AdminRoute />}>
             <Route path="/admin" element={<AdminPage />} />
           </Route>
