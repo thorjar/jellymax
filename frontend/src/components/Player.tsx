@@ -674,16 +674,16 @@ export function Player({ item, onItemChange }: PlayerProps) {
             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-sm sm:gap-3">
               <button type="button" onClick={togglePlayback} aria-label={playing ? "Pause" : "Play"}
                 className="rounded-full p-2 hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name={playing ? "pause" : "play"} /></button>
-              <button type="button" onClick={() => void switchItem(adjacent?.PreviousId)} aria-label="Previous episode"
+              {item.Type === "Episode" && <button type="button" onClick={() => void switchItem(adjacent?.PreviousId)} aria-label="Previous episode"
                 disabled={!adjacent?.PreviousId}
-                className="rounded-full p-2 hover:bg-white/15 disabled:opacity-35 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name="previous" /></button>
+                className="rounded-full p-2 hover:bg-white/15 disabled:opacity-35 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name="previous" /></button>}
               <button type="button" onClick={() => seek((mediaRef.current?.currentTime ?? currentTime) - 10)} aria-label="Back 10 seconds"
                 className="rounded-full p-2 hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name="back10" className="h-6 w-6" /></button>
               <button type="button" onClick={() => seek((mediaRef.current?.currentTime ?? currentTime) + 10)} aria-label="Forward 10 seconds"
                 className="rounded-full p-2 hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name="forward10" className="h-6 w-6" /></button>
-              <button type="button" onClick={() => void switchItem(adjacent?.NextId)} aria-label="Next episode"
+              {item.Type === "Episode" && <button type="button" onClick={() => void switchItem(adjacent?.NextId)} aria-label="Next episode"
                 disabled={!adjacent?.NextId}
-                className="rounded-full p-2 hover:bg-white/15 disabled:opacity-35 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name="next" /></button>
+                className="rounded-full p-2 hover:bg-white/15 disabled:opacity-35 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name="next" /></button>}
               <span className="min-w-24 tabular-nums text-xs text-white/85">{formatSeconds(currentTime)} / {formatSeconds(duration)}</span>
               <div className="ml-auto flex items-center gap-1.5 sm:gap-3">
                 <button type="button" aria-label={muted || volume === 0 ? "Unmute" : "Mute"}
