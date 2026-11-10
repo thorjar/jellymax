@@ -9,7 +9,7 @@ import { announceFavoritesChanged } from "../lib/favoriteEvents";
 import { Icon, ICONS } from "./icons";
 import { ItemImage } from "./ItemImage";
 
-interface ItemCardProps { item: Item; layout?: "poster" | "episode"; onRemove?: (itemId: string) => void; }
+interface ItemCardProps { item: Item; layout?: "poster" | "episode" | "landscape"; onRemove?: (itemId: string) => void; }
 
 function DetailModal({ item, onClose }: { item: Item; onClose: () => void }) {
   useEffect(() => {
@@ -44,7 +44,7 @@ export function ItemCard({ item, layout = "poster", onRemove }: ItemCardProps) {
   const menu=useRef<HTMLDivElement>(null);
   useEffect(()=>setCurrent(item),[item]);
   useEffect(()=>{if(!menuOpen)return;const close=(event:MouseEvent)=>{if(!menu.current?.contains(event.target as Node))setMenuOpen(false)};document.addEventListener("mousedown",close);return()=>document.removeEventListener("mousedown",close)},[menuOpen]);
-  const duration=formatTicks(current.RunTimeTicks),resume=(current.UserData?.PlaybackPositionTicks??0)>0&&!current.UserData?.Played,episode=layout==="episode"||current.Type==="Episode";
+  const duration=formatTicks(current.RunTimeTicks),resume=(current.UserData?.PlaybackPositionTicks??0)>0&&!current.UserData?.Played,episode=layout==="episode"||current.Type==="Episode",landscape=layout==="landscape";
   const episodeLabel=`S${String(current.ParentIndexNumber??0).padStart(2,"0")} · E${String(current.IndexNumber??0).padStart(2,"0")}`;
   const updateUserData=(data:UserData)=>setCurrent(value=>({...value,UserData:data}));
   async function togglePlayed(){if(!user||busy)return;setBusy(true);setError(null);try{const data=await api.setPlayed(user.Id,current.Id,!current.UserData?.Played);updateUserData(data);if(data.Played)onRemove?.(current.Id);setMenuOpen(false)}catch(reason){setError(reason instanceof Error?reason.message:String(reason))}finally{setBusy(false)}}
@@ -54,8 +54,8 @@ export function ItemCard({ item, layout = "poster", onRemove }: ItemCardProps) {
   async function addToPlaylist(playlist:Playlist){if(busy)return;setBusy(true);setError(null);setNotice(null);try{await api.appendPlaylistItems(playlist.Id,[current.Id]);setNotice(`Added to ${playlist.Name}.`);setPlaylistOpen(false)}catch(reason){setError(reason instanceof Error?reason.message:String(reason))}finally{setBusy(false)}}
   return <div className="group relative min-w-0">
     <Link to={`/items/${current.Id}`} className={episode?"block overflow-hidden rounded-xl border border-edge bg-surface-raised transition hover:border-brand/50 hover:bg-surface-hover hover:shadow-lg hover:shadow-brand/10":"block"}>
-      <div className={`relative overflow-hidden bg-surface-raised ${episode?"aspect-video":"aspect-[2/3] rounded-xl border border-edge shadow-sm transition group-hover:border-brand/50 group-hover:shadow-lg group-hover:shadow-brand/10"}`}>
-        <ItemImage itemId={current.Id} name={current.Name} revision={current.TmdbId ?? "local"} className="h-full w-full transition duration-300 group-hover:scale-[1.035]"/>{episode&&<div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/70 to-transparent"/>}{episode&&<span className="absolute bottom-2 left-2 rounded-md bg-black/70 px-2 py-1 text-[11px] font-semibold text-white">{episodeLabel}</span>}{duration&&<span className="absolute bottom-1.5 right-1.5 rounded-md bg-black/75 px-1.5 py-0.5 text-[11px] font-medium text-white">{duration}</span>}{resume&&<span className="absolute left-1.5 top-1.5 rounded-md bg-brand px-1.5 py-0.5 text-[11px] font-semibold text-white">Resume</span>}{current.UserData?.Played&&<span className="absolute left-1.5 top-1.5 grid h-8 w-8 place-items-center rounded-full bg-brand text-white shadow" aria-label="Played"><Icon path={ICONS.check} className="h-5 w-5"/></span>}
+      <div className={`relative overflow-hidden bg-surface-raised ${episode||landscape?"aspect-video":"aspect-[2/3]"} ${landscape||!episode?"rounded-xl border border-edge shadow-sm transition group-hover:border-brand/50 group-hover:shadow-lg group-hover:shadow-brand/10":""}`}>
+        <ItemImage itemId={current.Id} name={current.Name} revision={current.TmdbId ?? "local"} imageType={landscape ? "Backdrop" : "Primary"} className="h-full w-full transition duration-300 group-hover:scale-[1.035]"/>{episode&&<div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/70 to-transparent"/>}{episode&&<span className="absolute bottom-2 left-2 rounded-md bg-black/70 px-2 py-1 text-[11px] font-semibold text-white">{episodeLabel}</span>}{duration&&<span className="absolute bottom-1.5 right-1.5 rounded-md bg-black/75 px-1.5 py-0.5 text-[11px] font-medium text-white">{duration}</span>}{resume&&<span className="absolute left-1.5 top-1.5 rounded-md bg-brand px-1.5 py-0.5 text-[11px] font-semibold text-white">Resume</span>}{current.UserData?.Played&&<span className="absolute left-1.5 top-1.5 grid h-8 w-8 place-items-center rounded-full bg-brand text-white shadow" aria-label="Played"><Icon path={ICONS.check} className="h-5 w-5"/></span>}
       </div>
       <div className={episode?"p-3.5":""}><p className={`${episode?"":"mt-2 text-sm"} truncate font-medium text-ink`} title={current.Name}>{current.Name}</p><p className={episode?"mt-1 line-clamp-2 min-h-10 text-xs leading-5 text-ink-muted":"text-xs text-ink-muted"}>{episode?current.Overview||`${episodeLabel}${current.Year?` · ${current.Year}`:""}`:current.IsFolder?`${current.ChildCount??0} ${current.Type==="Series"?"seasons":"episodes"}`:[current.Type,current.Year].filter(Boolean).join(" · ")}</p></div>
     </Link>

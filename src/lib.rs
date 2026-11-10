@@ -225,6 +225,10 @@ pub fn router(state: AppState) -> Router {
         .route("/Items/{id}/Download", get(playback::stream))
         .route("/Items/{id}/Images/Primary", get(assets::image))
         .route("/Items/{id}/Images/Backdrop", get(assets::backdrop_image))
+        .route(
+            "/Items/{id}/Images/Backdrop/{index}",
+            get(assets::backdrop_image_indexed),
+        )
         .route("/Items/{id}/Subtitles", get(assets::subtitles))
         .route("/Items/{id}/Subtitles/{index}", get(assets::subtitle))
         .route("/Items/{id}/SubtitleSearch", get(subtitle_provider::search))

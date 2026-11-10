@@ -61,6 +61,7 @@ pub struct SearchHit {
     pub release_date: Option<String>,
     pub overview: Option<String>,
     pub poster_path: Option<String>,
+    pub backdrop_path: Option<String>,
     pub rating: Option<f64>,
     pub genre_ids: Vec<i64>,
 }
@@ -157,6 +158,7 @@ async fn movie_by_id(state: &AppState, id: i64) -> Result<SearchHit> {
         release_date: non_empty(&data["release_date"]),
         overview: non_empty(&data["overview"]),
         poster_path: non_empty(&data["poster_path"]),
+        backdrop_path: non_empty(&data["backdrop_path"]),
         rating: data["vote_average"]
             .as_f64()
             .filter(|rating| rating.is_finite() && *rating > 0.0),
@@ -326,7 +328,7 @@ pub async fn download_backdrop(
         return false;
     };
     let ok = matches!(child.wait().await, Ok(status) if status.success());
-    if ok && tokio::fs::rename(&temporary, destination).await.is_ok() {
+    if ok && replace_download(&temporary, destination).await {
         return true;
     }
     tokio::fs::remove_file(&temporary).await.ok();
@@ -711,6 +713,7 @@ async fn tv_details(state: &AppState, path: &str) -> Result<Value> {
 
 async fn store_tv(state: &AppState, item: &str, data: Value) -> Result<bool> {
     let poster = non_empty(&data["poster_path"]).or_else(|| non_empty(&data["still_path"]));
+    let backdrop = non_empty(&data["backdrop_path"]);
     let item_id = item.to_owned();
     let changed = state.db.call(move |c| {
         let genres = data["genres"].as_array().map(|a|a.iter().filter_map(|v|v["name"].as_str()).collect::<Vec<_>>());
@@ -718,15 +721,30 @@ async fn store_tv(state: &AppState, item: &str, data: Value) -> Result<bool> {
         Ok(c.execute("UPDATE items SET tmdb_id=?2,name=COALESCE(?3,name),overview=?4,year=?5,rating=?6,genres=COALESCE(?7,genres) WHERE id=?1",
             params![item_id,data["id"].as_i64().map(|v|v.to_string()),non_empty(&data["name"]),non_empty(&data["overview"]),year,data["vote_average"].as_f64(),genres.map(|g|serde_json::to_string(&g).unwrap())])?)
     }).await?;
-    if changed > 0
-        && let Some(poster) = poster
-    {
-        download_poster(
-            state,
-            &poster,
-            &state.data_dir.join("artwork").join(format!("{item}.jpg")),
-        )
-        .await;
+    if changed > 0 {
+        let artwork = state.data_dir.join("artwork");
+        let poster_destination = artwork.join(format!("{item}.jpg"));
+        let backdrop_destination = artwork.join(format!("{item}-backdrop.jpg"));
+        let (poster_ok, backdrop_ok) = tokio::join!(
+            async {
+                match poster.as_deref() {
+                    Some(path) => download_poster(state, path, &poster_destination).await,
+                    None => true,
+                }
+            },
+            async {
+                match backdrop.as_deref() {
+                    Some(path) => download_backdrop(state, path, &backdrop_destination).await,
+                    None => true,
+                }
+            }
+        );
+        if !poster_ok {
+            tracing::warn!(item = %item, "TMDb poster download failed");
+        }
+        if !backdrop_ok {
+            tracing::warn!(item = %item, "TMDb backdrop download failed");
+        }
     }
     Ok(changed > 0)
 }
@@ -882,14 +900,28 @@ async fn apply_movie_hit(
         // The item vanished mid-scan; there is nothing to enrich.
         return Ok(false);
     }
-    if let Some(poster) = hit.poster_path.as_deref() {
-        let destination = state
-            .data_dir
-            .join("artwork")
-            .join(format!("{item_id}.jpg"));
-        if !download_poster(state, poster, &destination).await {
-            tracing::warn!(item = %item_id, "TMDb poster download failed");
+    let artwork = state.data_dir.join("artwork");
+    let poster_destination = artwork.join(format!("{item_id}.jpg"));
+    let backdrop_destination = artwork.join(format!("{item_id}-backdrop.jpg"));
+    let (poster_ok, backdrop_ok) = tokio::join!(
+        async {
+            match hit.poster_path.as_deref() {
+                Some(path) => download_poster(state, path, &poster_destination).await,
+                None => true,
+            }
+        },
+        async {
+            match hit.backdrop_path.as_deref() {
+                Some(path) => download_backdrop(state, path, &backdrop_destination).await,
+                None => true,
+            }
         }
+    );
+    if !poster_ok {
+        tracing::warn!(item = %item_id, "TMDb poster download failed");
+    }
+    if !backdrop_ok {
+        tracing::warn!(item = %item_id, "TMDb backdrop download failed");
     }
     tracing::info!(item = %item_id, tmdb = %hit.id, title = %hit.title, "TMDb metadata stored");
     Ok(true)
@@ -1093,6 +1125,7 @@ fn parse_search(body: &str) -> Option<Vec<SearchHit>> {
                     release_date,
                     overview: non_empty(&result["overview"]),
                     poster_path: non_empty(&result["poster_path"]),
+                    backdrop_path: non_empty(&result["backdrop_path"]),
                     rating: result["vote_average"]
                         .as_f64()
                         .filter(|rating| rating.is_finite() && *rating > 0.0),
@@ -1294,6 +1327,7 @@ mod tests {
                 release_date: Some("1934-01-01".into()),
                 overview: None,
                 poster_path: None,
+                backdrop_path: None,
                 rating: Some(5.0),
                 genre_ids: vec![],
             },
@@ -1303,6 +1337,7 @@ mod tests {
                 release_date: Some("2009-05-29".into()),
                 overview: Some("Carl".into()),
                 poster_path: Some("/up.jpg".into()),
+                backdrop_path: Some("/up-wide.jpg".into()),
                 rating: Some(7.8),
                 genre_ids: vec![],
             },

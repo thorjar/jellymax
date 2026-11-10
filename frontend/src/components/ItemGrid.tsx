@@ -4,7 +4,7 @@ import { ItemCard } from "./ItemCard";
 interface ItemGridProps {
   items: Item[];
   emptyMessage?: string;
-  layout?: "poster" | "episode";
+  layout?: "poster" | "episode" | "landscape";
   onRemove?: (itemId: string) => void;
 }
 
@@ -18,7 +18,7 @@ export function ItemGrid({ items, emptyMessage = "No items found.", layout = "po
     );
   }
   return (
-    <div className={layout === "episode"
+    <div className={layout === "episode" || layout === "landscape"
       ? "grid gap-5 sm:grid-cols-2 xl:grid-cols-3"
       : "grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"}>
       {items.map((item) => (

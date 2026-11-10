@@ -235,14 +235,25 @@ pub struct ItemQuery {
 pub const ITEM_COLUMNS: &str = "i.id,i.name,i.kind,i.library_id,i.container,i.size,i.runtime_ticks,i.media_streams,COALESCE(u.position_ticks,0),COALESCE(u.played,0),COALESCE(u.favorite,0),i.tmdb_id,i.year,i.overview,i.genres,i.rating,i.parent_id,i.index_number,i.parent_index_number,(SELECT COUNT(*) FROM items child WHERE child.parent_id=i.id),CASE WHEN i.kind='Series' THEN i.id WHEN i.kind='Season' THEN i.parent_id ELSE (SELECT parent_id FROM items season WHERE season.id=i.parent_id) END,(SELECT name FROM items series WHERE series.id=CASE WHEN i.kind='Series' THEN i.id WHEN i.kind='Season' THEN i.parent_id ELSE (SELECT parent_id FROM items season WHERE season.id=i.parent_id) END),(SELECT tmdb_id FROM items series WHERE series.id=CASE WHEN i.kind='Series' THEN i.id WHEN i.kind='Season' THEN i.parent_id ELSE (SELECT parent_id FROM items season WHERE season.id=i.parent_id) END),i.remote_server_id IS NOT NULL";
 pub fn item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let kind: String = row.get(2)?;
+    let tmdb_id = row.get::<_, Option<String>>(11)?;
+    let remote = row.get::<_, bool>(23)?;
+    let series_id = row.get::<_, Option<String>>(20)?;
+    let own_backdrop = remote
+        || (matches!(kind.as_str(), "Movie" | "Series")
+            && tmdb_id.as_deref().is_some_and(|id| !id.trim().is_empty()));
+    let parent_backdrop = matches!(kind.as_str(), "Season" | "Episode") && series_id.is_some();
     Ok(
         json!({"Id":row.get::<_,String>(0)?,"Name":row.get::<_,String>(1)?,"Type":kind,
-        "MediaType":if kind=="Audio" {"Audio"} else {"Video"},"IsFolder":matches!(kind.as_str(),"Series"|"Season"),"IsRemote":row.get::<_,bool>(23)?,
+        "MediaType":if kind=="Audio" {"Audio"} else {"Video"},"IsFolder":matches!(kind.as_str(),"Series"|"Season"),"IsRemote":remote,
         "LibraryId":row.get::<_,String>(3)?,"ParentId":row.get::<_,Option<String>>(16)?.or(Some(row.get::<_,String>(3)?)),"IndexNumber":row.get::<_,Option<i64>>(17)?,"ParentIndexNumber":row.get::<_,Option<i64>>(18)?,"ChildCount":row.get::<_,i64>(19)?,"SeriesId":row.get::<_,Option<String>>(20)?,"SeriesName":row.get::<_,Option<String>>(21)?,"SeriesTmdbId":row.get::<_,Option<String>>(22)?,"Container":row.get::<_,String>(4)?,"Size":row.get::<_,i64>(5)?,
         "RunTimeTicks":row.get::<_,Option<i64>>(6)?,
         "MediaStreams":serde_json::from_str::<Value>(&row.get::<_,String>(7)?).unwrap_or(json!([])),
         "UserData":{"PlaybackPositionTicks":row.get::<_,i64>(8)?,"Played":row.get::<_,bool>(9)?,"IsFavorite":row.get::<_,bool>(10)?},
-        "TmdbId":row.get::<_,Option<String>>(11)?,"Year":row.get::<_,Option<i64>>(12)?,
+        "ImageTags":{"Primary":tmdb_id.as_deref().unwrap_or("primary")},
+        "BackdropImageTags":if own_backdrop {json!(["backdrop"])} else {json!([])},
+        "ParentBackdropItemId":if parent_backdrop {series_id} else {None},
+        "ParentBackdropImageTags":if parent_backdrop {json!(["backdrop"])} else {json!([])},
+        "TmdbId":tmdb_id,"Year":row.get::<_,Option<i64>>(12)?,
         "Overview":row.get::<_,Option<String>>(13)?,
         "Genres":serde_json::from_str::<Value>(&row.get::<_,String>(14)?).unwrap_or(json!([])),
         "CommunityRating":row.get::<_,Option<f64>>(15)?}),

@@ -165,6 +165,21 @@ pub async fn backdrop_image(
     }
     Err(Error::missing())
 }
+
+/// Jellyfin represents backdrops as an indexed image collection. Supporting
+/// `/Backdrop/0` lets standard Jellyfin clients consume Jellymax artwork using
+/// the `BackdropImageTags` advertised in item responses.
+pub async fn backdrop_image_indexed(
+    auth: Auth,
+    State(state): State<AppState>,
+    Path((item, index)): Path<(String, usize)>,
+    request: Request,
+) -> Result<Response> {
+    if index != 0 {
+        return Err(Error::missing());
+    }
+    backdrop_image(auth, State(state), Path(item), request).await
+}
 struct Subtitle {
     path: PathBuf,
     codec: String,

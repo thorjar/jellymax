@@ -46,7 +46,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=jellymax-backend
           tags: |
             ${{ steps.image.outputs.name }}:latest
-            ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
 
   frontend-image:
     name: Publish frontend image
@@ -77,4 +77,4 @@ jobs:
           cache-to: type=gha,mode=max,scope=jellymax-frontend
           tags: |
             ${{ steps.image.outputs.name }}:latest
-            ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+            ${{ steps.image.outputs.name }}:${{ github.sha }}

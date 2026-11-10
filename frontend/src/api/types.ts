@@ -95,6 +95,10 @@ export interface Item {
   Overview?: string | null;
   Genres?: string[];
   CommunityRating?: number | null;
+  ImageTags?: Record<string, string>;
+  BackdropImageTags?: string[];
+  ParentBackdropItemId?: string | null;
+  ParentBackdropImageTags?: string[];
 }
 
 export interface MetadataMatch {
