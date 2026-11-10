@@ -1,10 +1,12 @@
-type IconName = "play" | "pause" | "back10" | "forward10" | "volume" | "muted" | "captions" | "audioTracks" | "fullscreen" | "exitFullscreen" | "pip" | "exitPip";
+type IconName = "play" | "pause" | "previous" | "next" | "back10" | "forward10" | "volume" | "muted" | "captions" | "audioTracks" | "fullscreen" | "exitFullscreen" | "pip" | "exitPip";
 
 export function PlaybackIcon({ name, className = "h-5 w-5" }: { name: IconName; className?: string }) {
   const common = { width: 24, height: 24, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, className, "aria-hidden": true as const };
   switch (name) {
     case "play": return <svg {...common}><path d="M8 5.5v13l10-6.5z" fill="currentColor" stroke="none" /></svg>;
     case "pause": return <svg {...common}><path d="M7 5h3v14H7zM14 5h3v14h-3z" fill="currentColor" stroke="none" /></svg>;
+    case "previous": return <svg {...common}><path d="M6 5v14M18 6l-9 6 9 6z" fill="currentColor" stroke="none" /></svg>;
+    case "next": return <svg {...common}><path d="M18 5v14M6 6l9 6-9 6z" fill="currentColor" stroke="none" /></svg>;
     case "back10": return <svg {...common}><path d="M4.5 8V4.5M4.5 8H8" /><path d="M4.7 8a8 8 0 1 1-.6 6" /><text x="12" y="15" textAnchor="middle" fill="currentColor" stroke="none" fontSize="7" fontWeight="700">10</text></svg>;
     case "forward10": return <svg {...common}><path d="M19.5 8V4.5M19.5 8H16" /><path d="M19.3 8a8 8 0 1 0 .6 6" /><text x="12" y="15" textAnchor="middle" fill="currentColor" stroke="none" fontSize="7" fontWeight="700">10</text></svg>;
     case "volume": return <svg {...common}><path d="M4 9v6h4l4 3V6L8 9z" /><path d="M15 9a4 4 0 0 1 0 6M17.5 6.5a7.5 7.5 0 0 1 0 11" /></svg>;

@@ -303,9 +303,16 @@ async fn remote_artwork_proxies_the_image_kind_that_was_requested() {
         (StatusCode::OK, "remote-backdrop".into())
     );
     assert_eq!(
+        artwork(&s, "remote-movie", "Backdrop/0").await,
+        (StatusCode::OK, "remote-backdrop".into())
+    );
+    assert_eq!(
         artwork(&s, "remote-movie", "Primary").await,
         (StatusCode::OK, "remote-primary".into())
     );
+    let item = s.call("GET", "/Items/remote-movie", None).await.1;
+    assert_eq!(item["BackdropImageTags"], json!(["backdrop"]));
+    assert_eq!(item["ImageTags"]["Primary"], "primary");
     server.abort();
 }
 
@@ -1668,10 +1675,10 @@ async fn tmdb_metadata_and_artwork_survive_rescans_restart_and_refresh() {
         let path=request.uri().path();
         if path.starts_with("/images/") {return axum::response::IntoResponse::into_response(([("content-type","image/jpeg")],b"poster".to_vec()));}
         let data=match path {
-            "/search/movie"=>json!({"results":[{"id":42,"title":"Example Movie","release_date":"2020-01-01","overview":"Movie description","genre_ids":[18],"vote_average":8.0,"poster_path":"/movie.jpg"}]}),
+            "/search/movie"=>json!({"results":[{"id":42,"title":"Example Movie","release_date":"2020-01-01","overview":"Movie description","genre_ids":[18],"vote_average":8.0,"poster_path":"/movie.jpg","backdrop_path":"/movie-wide.jpg"}]}),
             "/genre/movie/list"=>json!({"genres":[{"id":18,"name":"Drama"}]}),
             "/search/tv"=>json!({"results":[{"id":100,"name":"Example Show","first_air_date":"2021-01-01"}]}),
-            "/tv/100"=>json!({"id":100,"name":"Example Show","first_air_date":"2021-01-01","overview":"Series description","genres":[{"id":18,"name":"Drama"}],"poster_path":"/show.jpg"}),
+            "/tv/100"=>json!({"id":100,"name":"Example Show","first_air_date":"2021-01-01","overview":"Series description","genres":[{"id":18,"name":"Drama"}],"poster_path":"/show.jpg","backdrop_path":"/show-wide.jpg"}),
             "/tv/100/season/1"=>json!({"id":101,"name":"Season One","air_date":"2021-01-01","overview":"Season description","poster_path":"/season.jpg"}),
             "/tv/100/season/1/episode/2"=>json!({"id":102,"name":"The Second Chapter","air_date":"2021-01-08","overview":"Episode description","vote_average":9.0,"still_path":"/still.jpg"}),
             _=>return axum::response::IntoResponse::into_response(StatusCode::NOT_FOUND),
@@ -1698,7 +1705,7 @@ async fn tmdb_metadata_and_artwork_survive_rescans_restart_and_refresh() {
     s.state.tmdb = TmdbConfig {
         api_key: Some("test-key".into()),
         api_base: format!("http://{address}"),
-        image_base: format!("http://{address}/images"),
+        image_base: format!("http://{address}/images/w500"),
         ..Default::default()
     };
     s.state.provider_keys.write().unwrap().tmdb = Some("test-key".into());
@@ -1722,6 +1729,19 @@ async fn tmdb_metadata_and_artwork_survive_rescans_restart_and_refresh() {
     let movie_data = s.call("GET", &format!("/Items/{movie}"), None).await.1;
     assert_eq!(movie_data["TmdbId"], "42");
     assert_eq!(movie_data["Genres"], json!(["Drama"]));
+    assert!(
+        s.state
+            .data_dir
+            .join("artwork")
+            .join(format!("{movie}-backdrop.jpg"))
+            .exists()
+    );
+    assert_eq!(
+        s.call("GET", &format!("/Items/{movie}/Images/Backdrop"), None)
+            .await
+            .0,
+        StatusCode::OK
+    );
     let episode = s
         .call("GET", "/Items?IncludeItemTypes=Episode", None)
         .await
@@ -1733,6 +1753,13 @@ async fn tmdb_metadata_and_artwork_survive_rescans_restart_and_refresh() {
     let series = episode["SeriesId"].as_str().unwrap();
     let season = episode["ParentId"].as_str().unwrap();
     let eid = episode["Id"].as_str().unwrap();
+    assert!(
+        s.state
+            .data_dir
+            .join("artwork")
+            .join(format!("{series}-backdrop.jpg"))
+            .exists()
+    );
     for (id, overview) in [
         (series, "Series description"),
         (season, "Season description"),

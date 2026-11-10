@@ -10,9 +10,9 @@ import { toWebVtt } from "../lib/subtitles";
 import { deleteSubtitle, listSavedSubtitles, saveSubtitle, type SavedSubtitle } from "../lib/subtitleLibrary";
 import type { SubtitleSearchResult } from "../api/types";
 
-interface PlayerProps { item: Item; }
+interface PlayerProps { item: Item; onItemChange?: (item: Item) => void; }
 
-export function Player({ item }: PlayerProps) {
+export function Player({ item, onItemChange }: PlayerProps) {
   const [source, setSource] = useState<MediaSource | null>(null);
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +43,7 @@ export function Player({ item }: PlayerProps) {
   const [captionText, setCaptionText] = useState("");
   const [pictureInPicture, setPictureInPicture] = useState(false);
   const [introSegments, setIntroSegments] = useState<MediaSegment[]>([]);
+  const [adjacent, setAdjacent] = useState<{ PreviousId: string | null; NextId: string | null } | null>(null);
   const mediaRef = useRef<HTMLMediaElement | null>(null);
   const subtitleTrackRef = useRef<HTMLTrackElement | null>(null);
   const subtitleCuesRef = useRef<SubtitleCue[]>([]);
@@ -61,6 +62,16 @@ export function Player({ item }: PlayerProps) {
   const isWindowsBrowser = /Windows/i.test(navigator.userAgent);
 
   useEffect(() => () => window.clearTimeout(controlsTimer.current), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAdjacent(null);
+    if (item.Type !== "Episode") return () => { cancelled = true; };
+    void api.adjacentEpisodes(item.Id)
+      .then((result) => { if (!cancelled) setAdjacent(result); })
+      .catch(() => { if (!cancelled) setAdjacent(null); });
+    return () => { cancelled = true; };
+  }, [item.Id, item.Type]);
 
   useEffect(() => {
     let cancelled = false;
@@ -418,6 +429,16 @@ export function Player({ item }: PlayerProps) {
     revealControls();
   }
 
+  async function switchItem(id: string | null | undefined) {
+    if (!id || !onItemChange) return;
+    try {
+      const next = await api.getItem(id);
+      onItemChange(next);
+    } catch (reason) {
+      setPlaybackNotice(reason instanceof Error ? reason.message : "Could not load that item.");
+    }
+  }
+
   function selectAudioTrack(index: number) {
     if (!source || index === selectedAudio) { setAudioMenuOpen(false); return; }
     const url = source.AudioTrackUrls?.[String(index)];
@@ -653,10 +674,16 @@ export function Player({ item }: PlayerProps) {
             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-sm sm:gap-3">
               <button type="button" onClick={togglePlayback} aria-label={playing ? "Pause" : "Play"}
                 className="rounded-full p-2 hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name={playing ? "pause" : "play"} /></button>
+              <button type="button" onClick={() => void switchItem(adjacent?.PreviousId)} aria-label="Previous episode"
+                disabled={!adjacent?.PreviousId}
+                className="rounded-full p-2 hover:bg-white/15 disabled:opacity-35 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name="previous" /></button>
               <button type="button" onClick={() => seek((mediaRef.current?.currentTime ?? currentTime) - 10)} aria-label="Back 10 seconds"
                 className="rounded-full p-2 hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name="back10" className="h-6 w-6" /></button>
               <button type="button" onClick={() => seek((mediaRef.current?.currentTime ?? currentTime) + 10)} aria-label="Forward 10 seconds"
                 className="rounded-full p-2 hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name="forward10" className="h-6 w-6" /></button>
+              <button type="button" onClick={() => void switchItem(adjacent?.NextId)} aria-label="Next episode"
+                disabled={!adjacent?.NextId}
+                className="rounded-full p-2 hover:bg-white/15 disabled:opacity-35 focus-visible:outline-2 focus-visible:outline-brand"><PlaybackIcon name="next" /></button>
               <span className="min-w-24 tabular-nums text-xs text-white/85">{formatSeconds(currentTime)} / {formatSeconds(duration)}</span>
               <div className="ml-auto flex items-center gap-1.5 sm:gap-3">
                 <button type="button" aria-label={muted || volume === 0 ? "Unmute" : "Mute"}

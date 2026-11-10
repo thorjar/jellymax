@@ -30,7 +30,7 @@ export function PlayerPage() {
 
   return (
     <section>
-      <Link to={`/items/${id}`} className="mb-4 inline-flex items-center gap-1.5 text-sm
+      <Link to={`/items/${item?.Id ?? id}`} className="mb-4 inline-flex items-center gap-1.5 text-sm
         text-ink-muted hover:text-ink">
         ← Back to item
       </Link>
@@ -42,7 +42,10 @@ export function PlayerPage() {
       )}
       {!item && !error && <Spinner label="Loading item…" />}
       {item?.Type === "Episode" && <EpisodeNavigation item={item} playback />}
-      {item && (item.IsFolder ? <Link to={`/items/${item.Id}`}>Browse {item.Name}</Link> : <Player key={item.Id} item={item} />)}
+      {item && (item.IsFolder ? <Link to={`/items/${item.Id}`}>Browse {item.Name}</Link> : <Player item={item} onItemChange={(next) => {
+        window.history.replaceState(window.history.state, "", `/play/${next.Id}`);
+        setItem(next);
+      }} />)}
     </section>
   );
 }

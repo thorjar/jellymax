@@ -45,6 +45,7 @@ export function ResumePage() {
       ) : (
         <ItemGrid
           items={items}
+          layout="landscape"
           onRemove={(itemId) => setItems((current) => current.filter((item) => item.Id !== itemId))}
           emptyMessage="Nothing to resume. Start playing something and it will appear here."
         />
