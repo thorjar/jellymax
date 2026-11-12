@@ -284,7 +284,24 @@ pub async fn backdrop_path(state: &AppState, path: &str) -> Option<String> {
     );
     let body = curl_text(&url).await?;
     let data: Value = serde_json::from_str(&body).ok()?;
-    non_empty(&data["backdrop_path"])
+    non_empty(&data["backdrop_path"]).or_else(|| non_empty(&data["still_path"]))
+}
+
+/// Fetch a portrait image path from a TMDb details record. Episode records do
+/// not expose `poster_path`, so their landscape still is the useful final
+/// fallback when a remote Jellyfin server has no primary image.
+pub async fn poster_path(state: &AppState, path: &str) -> Option<String> {
+    let key = state.provider_key("tmdb")?;
+    let url = format!(
+        "{}/{}?api_key={}&language={}",
+        state.tmdb.api_base,
+        path,
+        percent_encode(&key),
+        percent_encode(&state.tmdb.language),
+    );
+    let body = curl_text(&url).await?;
+    let data: Value = serde_json::from_str(&body).ok()?;
+    non_empty(&data["poster_path"]).or_else(|| non_empty(&data["still_path"]))
 }
 
 /// Download a TMDb backdrop at landscape-friendly resolution. Mirrors

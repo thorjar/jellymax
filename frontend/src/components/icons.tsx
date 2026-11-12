@@ -33,6 +33,7 @@ export const ICONS = {
   check: "m5 12 4 4L19 6",
   info: "M12 11v6M12 7h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z",
   restart: "M4 8V3m0 5h5M4.8 16a8 8 0 1 0 .2-8",
+  sliders: "M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6",
 };
 
 const LIBRARY_ICONS: Record<string, string> = {

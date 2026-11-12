@@ -30,36 +30,99 @@ async fn safe_sidecar(parent: &FsPath, path: &FsPath) -> Option<PathBuf> {
     }
     Some(resolved)
 }
+
+#[derive(Default)]
+struct ArtworkContext {
+    kind: String,
+    tmdb_id: Option<String>,
+    series_id: Option<String>,
+    series_tmdb_id: Option<String>,
+    season_number: Option<i64>,
+    episode_number: Option<i64>,
+}
+
+async fn artwork_context(state: &AppState, item: &str) -> Result<ArtworkContext> {
+    let item = item.to_owned();
+    state.db.call(move |c| {
+        use rusqlite::OptionalExtension;
+        c.query_row(
+            "SELECT i.kind,i.tmdb_id,
+             CASE WHEN i.kind='Series' THEN i.id WHEN i.kind='Season' THEN i.parent_id
+                  WHEN i.kind='Episode' THEN season.parent_id END,
+             series.tmdb_id,
+             CASE WHEN i.kind='Season' THEN i.index_number WHEN i.kind='Episode' THEN i.parent_index_number END,
+             CASE WHEN i.kind='Episode' THEN i.index_number END
+             FROM items i
+             LEFT JOIN items season ON season.id=i.parent_id AND i.kind='Episode'
+             LEFT JOIN items series ON series.id=CASE
+                 WHEN i.kind='Series' THEN i.id WHEN i.kind='Season' THEN i.parent_id
+                 WHEN i.kind='Episode' THEN season.parent_id END
+             WHERE i.id=?1",
+            [item],
+            |r| Ok(ArtworkContext {
+                kind: r.get(0)?, tmdb_id: r.get(1)?, series_id: r.get(2)?,
+                series_tmdb_id: r.get(3)?, season_number: r.get(4)?, episode_number: r.get(5)?,
+            }),
+        ).optional()?.ok_or_else(Error::missing)
+    }).await
+}
+
+fn tmdb_details_path(context: &ArtworkContext) -> Option<String> {
+    match context.kind.as_str() {
+        "Movie" => Some(format!("movie/{}", context.tmdb_id.as_deref()?.trim())),
+        "Series" => Some(format!("tv/{}", context.tmdb_id.as_deref()?.trim())),
+        "Season" => Some(format!(
+            "tv/{}/season/{}",
+            context.series_tmdb_id.as_deref()?.trim(),
+            context.season_number?
+        )),
+        "Episode" => Some(format!(
+            "tv/{}/season/{}/episode/{}",
+            context.series_tmdb_id.as_deref()?.trim(),
+            context.season_number?,
+            context.episode_number?
+        )),
+        _ => None,
+    }
+    .filter(|path| !path.contains("//"))
+}
+
+async fn stored_artwork(artwork: &FsPath, stem: &str) -> Option<PathBuf> {
+    for extension in ["jpg", "jpeg", "png", "webp"] {
+        if let Some(path) =
+            safe_sidecar(artwork, &artwork.join(format!("{stem}.{extension}"))).await
+        {
+            return Some(path);
+        }
+    }
+    None
+}
 pub async fn image(
     _auth: Auth,
     State(state): State<AppState>,
     Path(item): Path<String>,
     request: Request,
 ) -> Result<Response> {
-    if let Some(response) =
-        crate::remote::image(&state, &item, crate::remote::Artwork::Primary).await?
-    {
-        return Ok(response);
+    match crate::remote::image(&state, &item, crate::remote::Artwork::Primary).await {
+        Ok(Some(response)) => return Ok(response),
+        Ok(None) | Err(_) => {}
     }
     // Confirm existence before constructing a server-owned artwork path.
-    let kind = state
-        .db
-        .call({
-            let id = item.clone();
-            move |c| {
-                use rusqlite::OptionalExtension;
-                c.query_row("SELECT kind FROM items WHERE id=?1", [id], |r| {
-                    r.get::<_, String>(0)
-                })
-                .optional()?
-                .ok_or_else(Error::missing)
-            }
-        })
-        .await?;
+    let context = artwork_context(&state, &item).await?;
     let artwork = state.data_dir.clone().join("artwork");
-    for extension in ["jpg", "png", "webp"] {
-        if let Some(path) =
-            safe_sidecar(&artwork, &artwork.join(format!("{item}.{extension}"))).await
+    if let Some(path) = stored_artwork(&artwork, &item).await {
+        return Ok(ServeFile::new(path)
+            .oneshot(request)
+            .await
+            .map_err(Error::internal)?
+            .map(Body::new));
+    }
+    if let Some(details) = tmdb_details_path(&context)
+        && let Some(poster) = crate::tmdb::poster_path(&state, &details).await
+    {
+        let destination = artwork.join(format!("{item}.jpg"));
+        if crate::tmdb::download_poster(&state, &poster, &destination).await
+            && let Some(path) = safe_sidecar(&artwork, &destination).await
         {
             return Ok(ServeFile::new(path)
                 .oneshot(request)
@@ -68,7 +131,7 @@ pub async fn image(
                 .map(Body::new));
         }
     }
-    if matches!(kind.as_str(), "Series" | "Season") {
+    if matches!(context.kind.as_str(), "Series" | "Season") {
         return Err(Error::missing());
     }
     let media = media_path(&state, item.clone()).await?;
@@ -109,48 +172,39 @@ pub async fn backdrop_image(
     Path(item): Path<String>,
     request: Request,
 ) -> Result<Response> {
-    if let Some(response) = crate::remote::backdrop(&state, &item).await? {
+    if let Ok(Some(response)) = crate::remote::backdrop(&state, &item).await {
         return Ok(response);
     }
     let artwork = state.data_dir.clone().join("artwork");
-    for extension in ["jpg", "png", "webp"] {
-        if let Some(path) = safe_sidecar(
-            &artwork,
-            &artwork.join(format!("{item}-backdrop.{extension}")),
-        )
-        .await
-        {
-            return Ok(ServeFile::new(path)
-                .oneshot(request)
-                .await
-                .map_err(Error::internal)?
-                .map(Body::new));
-        }
+    if let Some(path) = stored_artwork(&artwork, &format!("{item}-backdrop")).await {
+        return Ok(ServeFile::new(path)
+            .oneshot(request)
+            .await
+            .map_err(Error::internal)?
+            .map(Body::new));
     }
-    let (kind, tmdb_id) = state
-        .db
-        .call({
-            let id = item.clone();
-            move |c| {
-                use rusqlite::OptionalExtension;
-                c.query_row("SELECT kind, tmdb_id FROM items WHERE id=?1", [id], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-                })
-                .optional()?
-                .ok_or_else(Error::missing)
-            }
-        })
-        .await?;
-    if let Some(tmdb_id) = tmdb_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
+    let context = artwork_context(&state, &item).await?;
+    // Episode primary artwork from TMDb is a 16:9 still and is preferable to
+    // a generic series image when no explicit episode backdrop exists.
+    if context.kind == "Episode"
+        && let Some(path) = stored_artwork(&artwork, &item).await
     {
-        let details = if kind == "Series" {
-            format!("tv/{tmdb_id}")
-        } else {
-            format!("movie/{tmdb_id}")
-        };
+        return Ok(ServeFile::new(path)
+            .oneshot(request)
+            .await
+            .map_err(Error::internal)?
+            .map(Body::new));
+    }
+    if let Some(series) = context.series_id.as_deref()
+        && let Some(path) = stored_artwork(&artwork, &format!("{series}-backdrop")).await
+    {
+        return Ok(ServeFile::new(path)
+            .oneshot(request)
+            .await
+            .map_err(Error::internal)?
+            .map(Body::new));
+    }
+    if let Some(details) = tmdb_details_path(&context) {
         let destination = artwork.join(format!("{item}-backdrop.jpg"));
         if let Some(backdrop) = crate::tmdb::backdrop_path(&state, &details).await
             && crate::tmdb::download_backdrop(&state, &backdrop, &destination).await

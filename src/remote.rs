@@ -865,7 +865,15 @@ pub(crate) async fn backdrop(state: &AppState, item: &str) -> Result<Option<Resp
             Ok(Some(response)) => return Ok(Some(response)),
             Ok(None) => continue,
             Err(error) if error.0 == StatusCode::NOT_FOUND => continue,
-            Err(error) => return Err(error),
+            Err(error) => {
+                // Artwork is optional. A remote server may be asleep, rate
+                // limited, or temporarily return 5xx while the item itself is
+                // still usable. Keep walking the lineage and then let the
+                // caller try Jellymax/TMDb artwork instead of turning a tile
+                // image into a 502.
+                tracing::warn!(item = %candidate, kind = artwork.remote_type(), %error,
+                               "Remote artwork unavailable; trying fallback");
+            }
         }
     }
     Ok(None)
