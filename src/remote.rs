@@ -809,9 +809,8 @@ pub async fn stream(
         .body(Body::from_stream(stream))
         .map_err(Error::internal)
 }
-/// Which image a caller asked for. Remote Jellyfin servers keep portrait
-/// posters under `Primary` and 16:9 artwork under `Backdrop`, so the server has
-/// to fetch the matching endpoint instead of always reusing the primary image.
+
+/// Which image a caller requested.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Artwork {
     Primary,
@@ -825,57 +824,74 @@ impl Artwork {
             Self::Backdrop => "Backdrop",
         }
     }
-    /// Keeps the two cached images apart. Primary keeps the historical name so
-    /// existing `{item}.hq.jpg` thumbnails stay valid.
-    fn cache_suffix(self) -> &'static str {
+
+    fn cache_suffix(self, index: Option<u32>) -> String {
         match self {
-            Self::Primary => "",
-            Self::Backdrop => "-backdrop",
+            Self::Primary => String::new(),
+            Self::Backdrop => format!("-backdrop-{}", index.unwrap_or(0)),
+        }
+    }
+
+    fn remote_path(self, remote: &str, index: Option<u32>) -> String {
+        match self {
+            Self::Primary => format!("Items/{remote}/Images/Primary"),
+            Self::Backdrop => {
+                format!("Items/{remote}/Images/Backdrop/{}", index.unwrap_or(0))
+            }
         }
     }
 }
 
-/// Landscape artwork for an item. Remote Jellyfin servers only store 16:9 art
-/// for some kinds, so this asks for the best landscape image available: the
-/// item's own backdrop, an episode's own primary image (episode stills are
-/// stored at 16:9), and the nearest ancestor's backdrop — a season shows its
-/// series art, matching Jellyfin's parent-artwork behavior. Primary images are
-/// never used for movies and series: they are portrait posters, so the caller
-/// falls through to TMDb landscape art instead of serving cropped portraits.
-/// `None` means no landscape artwork was found, so the caller can try its own
-/// sidecar or TMDb art.
-pub(crate) async fn backdrop(state: &AppState, item: &str) -> Result<Option<Response>> {
+/// Landscape artwork for an item.
+/// When an explicit index is supplied, fetch that exact backdrop.
+/// Otherwise, preserve the existing fallback behaviour:
+/// item backdrop 0 -> episode still -> ancestor backdrops.
+pub(crate) async fn backdrop(
+    state: &AppState,
+    item: &str,
+    index: Option<u32>,
+) -> Result<Option<Response>> {
+    if let Some(index) = index {
+        return image(state, item, Artwork::Backdrop, Some(index)).await;
+    }
+
     let lineage = item_lineage(state, item).await?;
     let episode = lineage.as_ref().is_some_and(|(kind, _)| kind == "Episode");
     let mut candidates = vec![(item.to_owned(), Artwork::Backdrop)];
+
     if episode {
-        // The still is more specific than the series backdrop for an episode.
         candidates.push((item.to_owned(), Artwork::Primary));
     }
+
     let mut ancestor = lineage.and_then(|(_, parent)| parent);
+
     for _ in 0..2 {
-        let Some(current) = ancestor else { break };
+        let Some(current) = ancestor else {
+            break;
+        };
+
         candidates.push((current.clone(), Artwork::Backdrop));
         ancestor = item_lineage(state, &current)
             .await?
             .and_then(|(_, parent)| parent);
     }
+
     for (candidate, artwork) in candidates {
-        match image(state, &candidate, artwork).await {
+        match image(state, &candidate, artwork, None).await {
             Ok(Some(response)) => return Ok(Some(response)),
             Ok(None) => continue,
             Err(error) if error.0 == StatusCode::NOT_FOUND => continue,
             Err(error) => {
-                // Artwork is optional. A remote server may be asleep, rate
-                // limited, or temporarily return 5xx while the item itself is
-                // still usable. Keep walking the lineage and then let the
-                // caller try Jellymax/TMDb artwork instead of turning a tile
-                // image into a 502.
-                tracing::warn!(item = %candidate, kind = artwork.remote_type(), %error,
-                               "Remote artwork unavailable; trying fallback");
+                tracing::warn!(
+                    item = %candidate,
+                    kind = artwork.remote_type(),
+                    %error,
+                    "Remote artwork unavailable; trying fallback"
+                );
             }
         }
     }
+
     Ok(None)
 }
 
@@ -895,19 +911,28 @@ async fn item_lineage(state: &AppState, item: &str) -> Result<Option<(String, Op
         .await
 }
 
+fn valid_jpeg(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && bytes.starts_with(&[0xFF, 0xD8, 0xFF]) && bytes.ends_with(&[0xFF, 0xD9])
+}
+
 /// Proxy one artwork kind for a remote item, using the on-disk cache.
-/// `None` means the item is not remote, so the caller serves its own artwork.
+/// Backdrops are cached independently by index.
+/// None means the item is not remote.
 pub(crate) async fn image(
     state: &AppState,
     item: &str,
     artwork: Artwork,
+    index: Option<u32>,
 ) -> Result<Option<Response>> {
     let Some((server, remote)) = for_item(state, item).await? else {
         return Ok(None);
     };
+
     let directory = state.data_dir.join("remote-artwork");
-    // Version the file name so existing 480px/quality-85 thumbnails are not reused.
-    let cached = directory.join(format!("{item}.hq{}.jpg", artwork.cache_suffix()));
+
+    let cached = directory.join(format!("{item}.hq{}.jpg", artwork.cache_suffix(index)));
+
+    // Serve valid cached artwork that is less than 24 hours old.
     if let Ok(metadata) = tokio::fs::metadata(&cached).await
         && metadata.is_file()
         && metadata
@@ -916,42 +941,76 @@ pub(crate) async fn image(
             .and_then(|time| time.elapsed().ok())
             .is_some_and(|age| age < std::time::Duration::from_secs(86_400))
     {
-        let bytes = tokio::fs::read(cached).await?;
-        return Response::builder()
-            .header(header::CONTENT_TYPE, "image/jpeg")
-            .body(Body::from(bytes))
-            .map(Some)
-            .map_err(Error::internal);
+        let bytes = tokio::fs::read(&cached).await?;
+
+        if valid_jpeg(&bytes) {
+            return Response::builder()
+                .header(header::CONTENT_TYPE, "image/jpeg")
+                .body(Body::from(bytes))
+                .map(Some)
+                .map_err(Error::internal);
+        }
     }
-    let mut url = endpoint(
-        &server,
-        &format!("Items/{remote}/Images/{}", artwork.remote_type()),
-    )?;
+
+    // Request the exact backdrop index from Jellyfin.
+    let path = artwork.remote_path(&remote, index);
+    let mut url = endpoint(&server, &path)?;
+
     url.query_pairs_mut()
         .append_pair("MaxWidth", "1200")
         .append_pair("Quality", "95")
         .append_pair("Format", "Jpg");
+
     let response = authorized(state.http.get(url), &server)
         .send()
         .await
         .map_err(upstream)?;
+
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(Error::missing());
     }
+
     let response = checked(response, "reading remote artwork").await?;
+
+    const MAX_ARTWORK_BYTES: usize = 4 * 1024 * 1024;
+
     if response
         .content_length()
-        .is_some_and(|length| length > 4 * 1024 * 1024)
+        .is_some_and(|length| length > MAX_ARTWORK_BYTES as u64)
     {
         return Err(upstream("remote artwork exceeded the thumbnail size limit"));
     }
-    let bytes = response.bytes().await.map_err(upstream)?;
-    if bytes.len() > 4 * 1024 * 1024 {
-        return Err(upstream("remote artwork exceeded the thumbnail size limit"));
+
+    // Read with a hard limit, including when Content-Length is absent.
+    let mut response = response;
+    let mut bytes = Vec::new();
+
+    while let Some(chunk) = response.chunk().await.map_err(upstream)? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_ARTWORK_BYTES {
+            return Err(upstream("remote artwork exceeded the thumbnail size limit"));
+        }
+
+        bytes.extend_from_slice(&chunk);
     }
+
+    // Never cache or serve invalid JPEG data.
+    if !valid_jpeg(&bytes) {
+        tracing::warn!(
+            item,
+            kind = artwork.remote_type(),
+            index = index.unwrap_or(0),
+            size = bytes.len(),
+            "Remote Jellyfin returned invalid JPEG artwork"
+        );
+
+        return Err(upstream("Invalid remote artwork"));
+    }
+
     tokio::fs::create_dir_all(&directory).await?;
-    tokio::fs::write(cached, &bytes).await?;
+    tokio::fs::write(&cached, &bytes).await?;
+
     prune_artwork(&directory).await;
+
     Ok(Some(
         Response::builder()
             .header(header::CONTENT_TYPE, "image/jpeg")

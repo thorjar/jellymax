@@ -103,7 +103,7 @@ pub async fn image(
     Path(item): Path<String>,
     request: Request,
 ) -> Result<Response> {
-    match crate::remote::image(&state, &item, crate::remote::Artwork::Primary).await {
+    match crate::remote::image(&state, &item, crate::remote::Artwork::Primary, None).await {
         Ok(Some(response)) => return Ok(response),
         Ok(None) | Err(_) => {}
     }
@@ -172,7 +172,7 @@ pub async fn backdrop_image(
     Path(item): Path<String>,
     request: Request,
 ) -> Result<Response> {
-    if let Ok(Some(response)) = crate::remote::backdrop(&state, &item).await {
+    if let Ok(Some(response)) = crate::remote::backdrop(&state, &item, None).await {
         return Ok(response);
     }
     let artwork = state.data_dir.clone().join("artwork");
@@ -220,20 +220,36 @@ pub async fn backdrop_image(
     Err(Error::missing())
 }
 
-/// Jellyfin represents backdrops as an indexed image collection. Supporting
-/// `/Backdrop/0` lets standard Jellyfin clients consume Jellymax artwork using
-/// the `BackdropImageTags` advertised in item responses.
+/// Serves a specific backdrop image by index.
+/// Unlike the unindexed endpoint, an indexed request must return
+/// the requested image rather than falling back to another image.
 pub async fn backdrop_image_indexed(
-    auth: Auth,
+    _auth: Auth,
     State(state): State<AppState>,
-    Path((item, index)): Path<(String, usize)>,
+    Path((item, index)): Path<(String, u32)>,
     request: Request,
 ) -> Result<Response> {
-    if index != 0 {
-        return Err(Error::missing());
+    // Fetch the exact requested backdrop from the remote server.
+    if let Some(response) = crate::remote::backdrop(&state, &item, Some(index)).await? {
+        return Ok(response);
     }
-    backdrop_image(auth, State(state), Path(item), request).await
+
+    // Preserve existing local artwork support for index 0.
+    if index == 0 {
+        let artwork = state.data_dir.join("artwork");
+
+        if let Some(path) = stored_artwork(&artwork, &format!("{item}-backdrop")).await {
+            return Ok(ServeFile::new(path)
+                .oneshot(request)
+                .await
+                .map_err(Error::internal)?
+                .map(Body::new));
+        }
+    }
+
+    Err(Error::missing())
 }
+
 struct Subtitle {
     path: PathBuf,
     codec: String,

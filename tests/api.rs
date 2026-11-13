@@ -247,176 +247,417 @@ async fn remote_external_srt_is_fetched_in_original_format_and_served_as_vtt() {
     server.abort();
 }
 
-/// Fetches an item's artwork through the app and returns the raw body.
-async fn artwork(s: &TestServer, item: &str, kind: &str) -> (StatusCode, String) {
+/// A minimal JPEG-shaped fixture accepted by remote::valid_jpeg.
+///
+/// This tests the proxy's current JPEG signature validation, not
+/// full image decoding.
+fn test_jpeg(marker: u8) -> Vec<u8> {
+    vec![0xFF, 0xD8, 0xFF, 0xE0, marker, 0xFF, 0xD9]
+}
+
+/// Fetch an item's artwork and return its raw bytes.
+async fn artwork(s: &TestServer, item: &str, kind: &str) -> (StatusCode, Vec<u8>) {
     let request = Request::builder()
         .uri(format!("/Items/{item}/Images/{kind}"))
         .header("X-Emby-Token", &s.token)
         .body(Body::empty())
         .unwrap();
+
     let response = s.app.clone().oneshot(request).await.unwrap();
     let status = response.status();
+
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    (status, String::from_utf8_lossy(&bytes).into_owned())
+
+    (status, bytes.to_vec())
 }
 
-/// Inserts the remote server, library, and items used by the artwork tests.
+/// Inserts the remote server, library, and items used by artwork tests.
 async fn remote_artwork_server(address: std::net::SocketAddr, items: &str) -> TestServer {
     let s = TestServer::new().await;
     let items = items.to_owned();
+
     s.state
         .db
         .call(move |c| {
-            c.execute("INSERT INTO remote_servers(id,name,base_url,server_id,user_id,access_token,device_id) VALUES ('remote','Remote',?1,'upstream','remote-user','secret','device')", [format!("http://{address}")])?;
-            c.execute("INSERT INTO libraries(id,name,path,kind,remote_server_id,remote_item_id) VALUES ('remote-library','Remote','remote://library','movies','remote','view')", [])?;
+            c.execute(
+                "INSERT INTO remote_servers(
+                    id,name,base_url,server_id,user_id,access_token,device_id
+                 ) VALUES (
+                    'remote','Remote',?1,'upstream',
+                    'remote-user','secret','device'
+                 )",
+                [format!("http://{address}")],
+            )?;
+
+            c.execute(
+                "INSERT INTO libraries(
+                    id,name,path,kind,remote_server_id,remote_item_id
+                 ) VALUES (
+                    'remote-library','Remote','remote://library',
+                    'movies','remote','view'
+                 )",
+                [],
+            )?;
+
             c.execute_batch(&items)?;
             Ok(())
         })
         .await
         .unwrap();
+
     s
 }
 
-/// The backdrop endpoint must ask the remote server for 16:9 artwork: proxying
-/// its primary poster is what made landscape rails crop portrait images.
+/// Primary and backdrop requests must proxy the correct remote image.
+/// Backdrop indices must resolve independently.
 #[tokio::test]
 async fn remote_artwork_proxies_the_image_kind_that_was_requested() {
+    let backdrop_0 = test_jpeg(0x10);
+    let backdrop_1 = test_jpeg(0x11);
+    let primary = test_jpeg(0x20);
+
     let upstream = Router::new()
         .route(
-            "/Items/abcd/Images/Backdrop",
-            axum::routing::get(|| async { "remote-backdrop" }),
+            "/Items/abcd/Images/Backdrop/0",
+            axum::routing::get({
+                let bytes = backdrop_0.clone();
+                move || {
+                    let bytes = bytes.clone();
+                    async move { ([("content-type", "image/jpeg")], bytes) }
+                }
+            }),
+        )
+        .route(
+            "/Items/abcd/Images/Backdrop/1",
+            axum::routing::get({
+                let bytes = backdrop_1.clone();
+                move || {
+                    let bytes = bytes.clone();
+                    async move { ([("content-type", "image/jpeg")], bytes) }
+                }
+            }),
         )
         .route(
             "/Items/abcd/Images/Primary",
-            axum::routing::get(|| async { "remote-primary" }),
+            axum::routing::get({
+                let bytes = primary.clone();
+                move || {
+                    let bytes = bytes.clone();
+                    async move { ([("content-type", "image/jpeg")], bytes) }
+                }
+            }),
         );
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+
     let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, upstream).await.unwrap();
+    });
+
     let s = remote_artwork_server(
         address,
-        "INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,scan_id,remote_server_id,remote_item_id) VALUES ('remote-movie','remote-library','remote://movie','Movie','Movie','mp4',100,0,10000000,'[]','scan','remote','abcd');",
+        "INSERT INTO items(
+            id,library_id,path,name,kind,container,size,
+            modified,runtime_ticks,media_streams,scan_id,
+            remote_server_id,remote_item_id
+         ) VALUES (
+            'remote-movie','remote-library','remote://movie',
+            'Movie','Movie','mp4',100,0,10000000,
+            '[]','scan','remote','abcd'
+         );",
     )
     .await;
+
+    // Default backdrop resolves to index 0.
     assert_eq!(
         artwork(&s, "remote-movie", "Backdrop").await,
-        (StatusCode::OK, "remote-backdrop".into())
+        (StatusCode::OK, backdrop_0.clone())
     );
+
+    // Explicit index 0 resolves to the same image.
     assert_eq!(
         artwork(&s, "remote-movie", "Backdrop/0").await,
-        (StatusCode::OK, "remote-backdrop".into())
+        (StatusCode::OK, backdrop_0.clone())
     );
+
+    // Explicit index 1 must resolve to a different image.
+    assert_eq!(
+        artwork(&s, "remote-movie", "Backdrop/1").await,
+        (StatusCode::OK, backdrop_1.clone())
+    );
+
+    // Primary artwork remains independent.
     assert_eq!(
         artwork(&s, "remote-movie", "Primary").await,
-        (StatusCode::OK, "remote-primary".into())
+        (StatusCode::OK, primary)
     );
+
+    // Confirm that the indexed backdrops use separate cache files.
+    let cache = s.state.data_dir.join("remote-artwork");
+
+    assert_eq!(
+        std::fs::read(cache.join("remote-movie.hq-backdrop-0.jpg")).unwrap(),
+        backdrop_0
+    );
+
+    assert_eq!(
+        std::fs::read(cache.join("remote-movie.hq-backdrop-1.jpg")).unwrap(),
+        backdrop_1
+    );
+
+    // Preserve existing Jellyfin-compatible metadata behaviour.
     let item = s.call("GET", "/Items/remote-movie", None).await.1;
+
     assert_eq!(item["BackdropImageTags"], json!(["backdrop"]));
+
     assert_eq!(item["ImageTags"]["Primary"], "primary");
+
     server.abort();
 }
 
-/// Seasons have no backdrop of their own, and episodes keep their still in the
-/// primary image, so landscape rails borrow the nearest usable ancestor art.
+/// Seasons borrow ancestor backdrops, while episodes prefer their
+/// own primary still when no backdrop is available.
 #[tokio::test]
 async fn remote_landscape_artwork_borrows_ancestor_backdrops() {
+    let series_backdrop = test_jpeg(0x30);
+    let episode_still = test_jpeg(0x40);
+
     let upstream = Router::new()
         .route(
-            "/Items/series/Images/Backdrop",
-            axum::routing::get(|| async { "series-backdrop" }),
+            "/Items/series/Images/Backdrop/0",
+            axum::routing::get({
+                let bytes = series_backdrop.clone();
+                move || {
+                    let bytes = bytes.clone();
+                    async move { ([("content-type", "image/jpeg")], bytes) }
+                }
+            }),
         )
         .route(
-            "/Items/season/Images/Backdrop",
+            "/Items/season/Images/Backdrop/0",
             axum::routing::get(|| async { StatusCode::NOT_FOUND }),
         )
         .route(
             "/Items/season/Images/Primary",
-            axum::routing::get(|| async { "season-poster" }),
+            axum::routing::get(|| async { ([("content-type", "image/jpeg")], test_jpeg(0x50)) }),
         )
         .route(
-            "/Items/episode/Images/Backdrop",
+            "/Items/episode/Images/Backdrop/0",
             axum::routing::get(|| async { StatusCode::NOT_FOUND }),
         )
         .route(
             "/Items/episode/Images/Primary",
-            axum::routing::get(|| async { "episode-still" }),
+            axum::routing::get({
+                let bytes = episode_still.clone();
+                move || {
+                    let bytes = bytes.clone();
+                    async move { ([("content-type", "image/jpeg")], bytes) }
+                }
+            }),
         );
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+
     let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, upstream).await.unwrap();
+    });
+
     let s = remote_artwork_server(
         address,
-        "INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,scan_id,remote_server_id,remote_item_id) VALUES ('remote-series','remote-library','remote://series','Series','Series','mp4',100,0,10000000,'[]','scan','remote','series');
-         INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,scan_id,remote_server_id,remote_item_id,parent_id) VALUES ('remote-season','remote-library','remote://season','Season','Season','mp4',100,0,10000000,'[]','scan','remote','season','remote-series');
-         INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,scan_id,remote_server_id,remote_item_id,parent_id) VALUES ('remote-episode','remote-library','remote://episode','Episode','Episode','mp4',100,0,10000000,'[]','scan','remote','episode','remote-season');",
+        "INSERT INTO items(
+            id,library_id,path,name,kind,container,size,
+            modified,runtime_ticks,media_streams,scan_id,
+            remote_server_id,remote_item_id
+         ) VALUES (
+            'remote-series','remote-library','remote://series',
+            'Series','Series','mp4',100,0,10000000,
+            '[]','scan','remote','series'
+         );
+
+         INSERT INTO items(
+            id,library_id,path,name,kind,container,size,
+            modified,runtime_ticks,media_streams,scan_id,
+            remote_server_id,remote_item_id,parent_id
+         ) VALUES (
+            'remote-season','remote-library','remote://season',
+            'Season','Season','mp4',100,0,10000000,
+            '[]','scan','remote','season','remote-series'
+         );
+
+         INSERT INTO items(
+            id,library_id,path,name,kind,container,size,
+            modified,runtime_ticks,media_streams,scan_id,
+            remote_server_id,remote_item_id,parent_id
+         ) VALUES (
+            'remote-episode','remote-library','remote://episode',
+            'Episode','Episode','mp4',100,0,10000000,
+            '[]','scan','remote','episode','remote-season'
+         );",
     )
     .await;
+
+    // Series uses its own backdrop.
     assert_eq!(
         artwork(&s, "remote-series", "Backdrop").await,
-        (StatusCode::OK, "series-backdrop".into())
+        (StatusCode::OK, series_backdrop.clone())
     );
-    // A season's own portrait poster must never be served as landscape art.
+
+    // Season borrows its series backdrop, not its portrait poster.
     assert_eq!(
         artwork(&s, "remote-season", "Backdrop").await,
-        (StatusCode::OK, "series-backdrop".into())
+        (StatusCode::OK, series_backdrop)
     );
+
+    // Episode prefers its own primary still.
     assert_eq!(
         artwork(&s, "remote-episode", "Backdrop").await,
-        (StatusCode::OK, "episode-still".into())
+        (StatusCode::OK, episode_still)
     );
+
     server.abort();
 }
 
-/// A remote movie whose server has no backdrop must fall back to TMDb
-/// landscape art rather than the portrait poster that landscape cards crop.
+/// A remote movie with no backdrop falls back to TMDb landscape
+/// artwork rather than its portrait poster.
 #[tokio::test]
 async fn remote_movie_landscape_artwork_falls_back_to_tmdb() {
+    let remote_poster = test_jpeg(0x60);
+    let tmdb_backdrop = test_jpeg(0x70);
+
     let upstream = Router::new()
         .route(
-            "/Items/nobd/Images/Backdrop",
+            "/Items/nobd/Images/Backdrop/0",
             axum::routing::get(|| async { StatusCode::NOT_FOUND }),
         )
         .route(
             "/Items/nobd/Images/Primary",
-            axum::routing::get(|| async { "remote-poster" }),
+            axum::routing::get({
+                let bytes = remote_poster.clone();
+                move || {
+                    let bytes = bytes.clone();
+                    async move { ([("content-type", "image/jpeg")], bytes) }
+                }
+            }),
         )
         .route(
             "/movie/123",
             axum::routing::get(|| async {
-                axum::Json(json!({"id":123,"backdrop_path":"/movie-backdrop.jpg"}))
+                axum::Json(json!({
+                    "id": 123,
+                    "backdrop_path": "/movie-backdrop.jpg"
+                }))
             }),
         )
         .route(
             "/images/w780/movie-backdrop.jpg",
-            axum::routing::get(|| async { "tmdb-backdrop" }),
+            axum::routing::get({
+                let bytes = tmdb_backdrop.clone();
+                move || {
+                    let bytes = bytes.clone();
+                    async move { ([("content-type", "image/jpeg")], bytes) }
+                }
+            }),
         );
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+
     let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, upstream).await.unwrap();
+    });
+
     let mut s = remote_artwork_server(
         address,
-        "INSERT INTO items(id,library_id,path,name,kind,container,size,modified,runtime_ticks,media_streams,scan_id,remote_server_id,remote_item_id,tmdb_id) VALUES ('remote-nobd','remote-library','remote://nobd','No Backdrop','Movie','mp4',100,0,10000000,'[]','scan','remote','nobd','123');",
+        "INSERT INTO items(
+            id,library_id,path,name,kind,container,size,
+            modified,runtime_ticks,media_streams,scan_id,
+            remote_server_id,remote_item_id,tmdb_id
+         ) VALUES (
+            'remote-nobd','remote-library','remote://nobd',
+            'No Backdrop','Movie','mp4',100,0,10000000,
+            '[]','scan','remote','nobd','123'
+         );",
     )
     .await;
+
     s.state.tmdb = TmdbConfig {
         api_key: Some("test-key".into()),
         api_base: format!("http://{address}"),
-        // Mirrors the real `.../t/p/w500` shape: the size segment is replaced.
         image_base: format!("http://{address}/images/w500"),
         ..Default::default()
     };
+
     s.state.provider_keys.write().unwrap().tmdb = Some("test-key".into());
+
     s.app = router(s.state.clone());
+
     let path = jellymax::tmdb::backdrop_path(&s.state, "movie/123").await;
+
     assert_eq!(path.as_deref(), Some("/movie-backdrop.jpg"));
+
+    // Remote backdrop is missing, so use TMDb.
     assert_eq!(
         artwork(&s, "remote-nobd", "Backdrop").await,
-        (StatusCode::OK, "tmdb-backdrop".into())
+        (StatusCode::OK, tmdb_backdrop)
     );
+
+    // Primary still comes from the remote Jellyfin server.
     assert_eq!(
         artwork(&s, "remote-nobd", "Primary").await,
-        (StatusCode::OK, "remote-poster".into())
+        (StatusCode::OK, remote_poster)
     );
+
+    server.abort();
+}
+
+/// Invalid remote JPEG data must never be served or cached.
+#[tokio::test]
+async fn remote_artwork_rejects_corrupted_jpeg() {
+    let upstream = Router::new().route(
+        "/Items/broken/Images/Primary",
+        axum::routing::get(|| async { ([("content-type", "image/jpeg")], vec![0x9B]) }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+    let address = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, upstream).await.unwrap();
+    });
+
+    let s = remote_artwork_server(
+        address,
+        "INSERT INTO items(
+            id,library_id,path,name,kind,container,size,
+            modified,runtime_ticks,media_streams,scan_id,
+            remote_server_id,remote_item_id
+         ) VALUES (
+            'remote-broken','remote-library','remote://broken',
+            'Broken','Movie','mp4',100,0,10000000,
+            '[]','scan','remote','broken'
+         );",
+    )
+    .await;
+
+    let (status, bytes) = artwork(&s, "remote-broken", "Primary").await;
+
+    assert_ne!(status, StatusCode::OK);
+    assert_ne!(bytes, vec![0x9B]);
+
+    let cached = s
+        .state
+        .data_dir
+        .join("remote-artwork")
+        .join("remote-broken.hq.jpg");
+
+    assert!(!cached.exists(), "Invalid JPEG data must not be cached");
+
     server.abort();
 }
 
